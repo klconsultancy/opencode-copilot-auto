@@ -125,11 +125,15 @@ const plugin: Plugin.Plugin = {
     async function resolveRoute(sessionID: string, auto: AutoSpec): Promise<Route> {
       const prompt = prompts.get(sessionID)
       const credential = await copilotCredential(ctx)
-      if (!credential || !prompt?.text) return pickRoute(auto, undefined, catalog)
       const session =
-        (await fetchAutoDecision(credential.baseURL, credential.bearer, prompt.text, auto.tier, prompt.hasImage)) ??
-        (await fetchLegacySession(credential.baseURL, credential.bearer))
-      return pickRoute(auto, session, catalog)
+        credential && prompt?.text
+          ? ((await fetchAutoDecision(credential.baseURL, credential.bearer, prompt.text, auto.tier, prompt.hasImage)) ??
+            (await fetchLegacySession(credential.baseURL, credential.bearer)))
+          : undefined
+      // opencode swaps in the account's live catalog (e.g. a business endpoint) while
+      // the first request is underway; judge the pick against the current transform's
+      // auto and catalog, not the ones this round started with.
+      return pickRoute(autos.get(auto.id) ?? auto, session, catalog)
     }
 
     // Route once per conversation and stick with it so the model — and its prompt KV

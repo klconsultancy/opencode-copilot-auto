@@ -383,6 +383,26 @@ describe("routing via POST /auto", () => {
     })
   })
 
+  test("judges the pick against a catalog swapped in while routing", async () => {
+    // opencode first builds the catalog without an account endpoint, then replays
+    // the transform with the live one (e.g. a business endpoint) during the request.
+    const BUSINESS = "https://api.business.githubcopilot.com"
+    const models: FakeModel[] = catalog.map((m) => ({ ...structuredClone(m), settings: { endpoint: m.settings.endpoint } }))
+    const live = () => {
+      models.splice(0, models.length, ...catalog.map((m) => ({ ...structuredClone(m), settings: { ...m.settings, baseURL: BUSINESS } })))
+      runTransforms()
+      return autoPicks("gpt-6-luna")()
+    }
+    let runTransforms = () => {}
+    await withFetch({ auto: live }, async () => {
+      const harness = await setup(models)
+      runTransforms = harness.runTransforms
+      const result = await harness.turn("auto")
+      expect(result.model).toBe("gpt-6-luna")
+      expect(result.token).toBe("tok-gpt-6-luna")
+    })
+  })
+
   test("a pick on another wire API falls back to the anchor", async () => {
     await withFetch({ auto: autoPicks("gemini-3.1-pro") }, async () => {
       const { turn } = await setup([...catalog, gemini])
