@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test"
 import pkg from "../package.json"
 import plugin from "../src/index"
 
-const makeModel = (id: string, apiId: string, npm: string, url: string, name: string, reasoning = false) => ({
+const makeModel = (id: string, apiId: string, npm: string, url: string, name: string, reasoning = false, temperature = true) => ({
   id,
   providerID: "github-copilot",
   api: { id: apiId, url, npm },
@@ -16,7 +16,7 @@ const makeModel = (id: string, apiId: string, npm: string, url: string, name: st
   cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
   limit: { context: 200000, output: 8192 },
   capabilities: {
-    temperature: true,
+    temperature,
     reasoning,
     attachment: true,
     toolcall: true,
@@ -87,7 +87,7 @@ async function setup(models: Record<string, unknown>, options: Record<string, un
       message: {} as never,
     }
     const output = {
-      temperature: 0,
+      temperature: 0.7 as number | undefined,
       topP: 0,
       topK: 0,
       maxOutputTokens: undefined as number | undefined,
@@ -96,7 +96,12 @@ async function setup(models: Record<string, unknown>, options: Record<string, un
     await hooks["chat.params"]!(input as never, output as never)
     const headers = { headers: {} as Record<string, string> }
     await hooks["chat.headers"]!(input as never, headers as never)
-    return { model: output.options.model, options: output.options, token: headers.headers["Copilot-Session-Token"] }
+    return {
+      model: output.options.model,
+      options: output.options,
+      temperature: output.temperature,
+      token: headers.headers["Copilot-Session-Token"],
+    }
   }
   return { hooks, resolved, turn }
 }
@@ -122,6 +127,18 @@ describe("catalog injection", () => {
       const result = await turn("auto-gpt")
       expect(result.model).toBe("gpt-6-luna")
       expect(result.token).toBe("tok-gpt-6-luna")
+    })
+  })
+
+  test("drops temperature when the routed model does not support it", async () => {
+    const luna = makeModel("gpt-6-luna", "gpt-6-luna", "@ai-sdk/github-copilot", COPILOT, "GPT-6 Luna", true, false)
+    await withFetch({ auto: autoPicks("gpt-6-luna") }, async () => {
+      const { turn } = await setup({ ...catalog, [luna.id]: luna })
+      expect((await turn("auto")).temperature).toBeUndefined()
+    })
+    await withFetch({ auto: autoPicks("gpt-5.4-mini") }, async () => {
+      const { turn } = await setup(catalog)
+      expect((await turn("auto")).temperature).toBe(0.7)
     })
   })
 

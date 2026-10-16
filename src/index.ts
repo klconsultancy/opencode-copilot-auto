@@ -631,6 +631,13 @@ const CopilotAutoModelPlugin: Plugin = async ({ client }, options) => {
       const decided = conv.route!.modelID
       output.options.model = decided
       log(`chat.params override ${auto.id} -> ${decided}`)
+      // opencode sized the params for the anchor; the routed model may reject
+      // temperature (e.g. gpt-6-luna 400s with "not supported"). opencode itself passes
+      // undefined for such models, despite the hook's `number` type.
+      if (modelByApiId(decided)?.capabilities?.temperature === false && output.temperature !== undefined) {
+        ;(output as { temperature?: number }).temperature = undefined
+        log(`temperature dropped for ${decided}`)
+      }
       const effort = reasoningOptions(decided, auto.tier)
       if (effort) {
         Object.assign(output.options, effort)
