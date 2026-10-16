@@ -150,13 +150,14 @@ async function setup(models: FakeModel[], options: Record<string, unknown> = {},
     const request = new Request(`${COPILOT}/responses`, {
       method: "POST",
       headers: { ...modelRequest.headers, "content-type": "application/json", "content-length": "999" },
-      body: JSON.stringify({ model: model.modelID, input: [] }),
+      body: JSON.stringify({ model: model.modelID, input: [], temperature: 0.7 }),
     })
     const http = { sessionID, agent: "build", model: ref, kind, request }
     await call("http.request", http)
-    const sent = JSON.parse(await http.request.text()) as { model: string }
+    const sent = JSON.parse(await http.request.text()) as { model: string; temperature?: number }
     return {
       model: sent.model,
+      temperature: sent.temperature,
       token: modelRequest.headers["Copilot-Session-Token"],
       options: context.options,
       contentLength: http.request.headers.get("content-length"),
@@ -273,6 +274,7 @@ describe("routing via POST /auto", () => {
       expect(result.model).toBe("gpt-6-luna")
       expect(result.token).toBe("tok-gpt-6-luna")
       expect(result.contentLength).toBeNull()
+      expect(result.temperature).toBeUndefined()
       expect(result.options).toEqual({})
     })
   })
@@ -418,6 +420,7 @@ describe("routing via POST /auto", () => {
       expect(result.model).toBe("gpt-5.4")
       expect(result.token).toBeUndefined()
       expect(result.contentLength).toBe("999")
+      expect(result.temperature).toBe(0.7)
       expect(calls).toHaveLength(0)
     })
   })

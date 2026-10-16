@@ -251,6 +251,12 @@ const plugin: Plugin.Plugin = {
         if (typeof body.model !== "string" || body.model === modelID) return
         log(`request model ${body.model} -> ${modelID}`)
         body.model = modelID
+        // Settings were resolved for the anchor; routed models such as gpt-6-luna
+        // reject `temperature` with a 400, and opencode 2 does not say which do.
+        if ("temperature" in body) {
+          delete body.temperature
+          log(`temperature dropped for ${modelID}`)
+        }
         const headers = new Headers(event.request.headers)
         headers.delete("content-length")
         event.request = new Request(event.request.url, {
