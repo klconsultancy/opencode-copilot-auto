@@ -17,12 +17,21 @@ which replace the defaults).
 
 ## Install
 
-Add the package name to `~/.config/opencode/opencode.json`:
+This is the **1.x** line, for **opencode 1** (the `plugin` config key and the
+`server()` plugin API). opencode 2 uses a new plugin API; use the **2.x** line
+there.
+
+| opencode | plugin version |
+|----------|----------------|
+| 1.x (≥ 1.18.29) | `opencode-github-copilot-auto-model@^1` |
+| 2.x | `opencode-github-copilot-auto-model@^2` |
+
+Add the package to `~/.config/opencode/opencode.json`:
 
 ```jsonc
 {
   "plugin": [
-    "opencode-github-copilot-auto-model"
+    "opencode-github-copilot-auto-model@^1"
   ]
 }
 ```
