@@ -97,7 +97,7 @@ async function setup(models: Record<string, unknown>, options: Record<string, un
     const headers = { headers: {} as Record<string, string> }
     await hooks["chat.headers"]!(input as never, headers as never)
     return {
-      model: output.options.model,
+      model: headers.headers["x-copilot-auto-route"],
       options: output.options,
       temperature: output.temperature,
       token: headers.headers["Copilot-Session-Token"],
@@ -344,12 +344,23 @@ describe("routing via POST /auto", () => {
     })
   })
 
-  test("unclamped auto accepts any pick on its transport", async () => {
-    await withFetch({ auto: autoPicks("gemini-3.1-pro") }, async () => {
-      const { turn } = await setup({ ...catalog, [gemini.id]: gemini })
+  test("unclamped auto accepts another family on the same transport and wire API", async () => {
+    const mai = makeModel("mai-code-1.1-flash", "mai-code-1.1-flash", "@ai-sdk/github-copilot", COPILOT, "MAI Code 1.1 Flash")
+    await withFetch({ auto: autoPicks("mai-code-1.1-flash") }, async () => {
+      const { turn } = await setup({ ...catalog, [gemini.id]: gemini, [mai.id]: mai }, { preferredModels: ["gemini-3.1-pro"] })
       const result = await turn("auto")
-      expect(result.model).toBe("gemini-3.1-pro")
-      expect(result.token).toBe("tok-gemini-3.1-pro")
+      expect(result.model).toBe("mai-code-1.1-flash")
+      expect(result.token).toBe("tok-mai-code-1.1-flash")
+    })
+  })
+
+  test("a pick on another wire API (chat vs responses) falls back to the anchor", async () => {
+    const mai = makeModel("mai-code-1.1-flash", "mai-code-1.1-flash", "@ai-sdk/github-copilot", COPILOT, "MAI Code 1.1 Flash")
+    await withFetch({ auto: autoPicks("mai-code-1.1-flash") }, async () => {
+      const { turn } = await setup({ ...catalog, [mai.id]: mai })
+      const result = await turn("auto")
+      expect(result.model).toBe("gpt-5.4")
+      expect(result.token).toBeUndefined()
     })
   })
 
@@ -367,6 +378,47 @@ describe("routing via POST /auto", () => {
     const output = { options: {} as Record<string, unknown> }
     await hooks["chat.params"]!({ sessionID: "s", model: { providerID: "anthropic", id: "auto" } } as never, output as never)
     expect(output.options.model).toBeUndefined()
+  })
+})
+
+describe("request rewrite", () => {
+  test("swaps the routed model into the body and strips the private header", async () => {
+    await withFetch({}, async (calls) => {
+      await setup(catalog)
+      await fetch(`${COPILOT}/responses`, {
+        method: "POST",
+        headers: { "X-Copilot-Auto-Route": "gpt-6-luna", "Copilot-Session-Token": "tok" },
+        body: JSON.stringify({ model: "gpt-5.4", input: [] }),
+      })
+      expect(calls[0].body).toEqual({ model: "gpt-6-luna", input: [] })
+      const sent = new Headers(calls[0].headers)
+      expect(sent.has("x-copilot-auto-route")).toBe(false)
+      expect(sent.get("copilot-session-token")).toBe("tok")
+    })
+  })
+
+  test("leaves requests without the route header untouched", async () => {
+    await withFetch({}, async (calls) => {
+      await setup(catalog)
+      const init = { method: "POST", headers: { Authorization: "x" }, body: JSON.stringify({ model: "gpt-5.4" }) }
+      await fetch(`${COPILOT}/responses`, init)
+      expect(calls[0].body).toEqual({ model: "gpt-5.4" })
+      expect(calls[0].headers).toBe(init.headers)
+    })
+  })
+
+  test("wraps fetch only once across plugin instances", async () => {
+    await withFetch({}, async (calls) => {
+      await setup(catalog)
+      await setup(catalog)
+      await fetch(`${COPILOT}/responses`, {
+        method: "POST",
+        headers: { "x-copilot-auto-route": "gpt-6-luna" },
+        body: JSON.stringify({ model: "gpt-5.4" }),
+      })
+      expect(calls).toHaveLength(1)
+      expect(calls[0].body.model).toBe("gpt-6-luna")
+    })
   })
 })
 

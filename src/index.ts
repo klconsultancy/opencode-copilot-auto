@@ -460,11 +460,65 @@ function modelByApiId(apiId: string): Model | undefined {
   return autoKnownModels.find((m) => m.providerID === PROVIDER_ID && m.api.id === apiId)
 }
 
+// opencode's github-copilot provider sends GPT-5+ (except gpt-5-mini) over the
+// Responses API and everything else over Chat Completions. The request bodies
+// differ, so a routed model must use the same wire API as the anchor whose language
+// model actually builds the request.
+function wireAPI(api: { id: string; npm: string }): string {
+  if (api.npm === "@ai-sdk/anthropic") return "messages"
+  const match = /^gpt-(\d+)/.exec(api.id)
+  return match && Number(match[1]) >= 5 && !api.id.startsWith("gpt-5-mini") ? "responses" : "chat"
+}
+
 function isSameFamily(apiId: string | undefined, templateApi: TemplateAPI): boolean {
   if (!apiId) return false
   if (apiId === templateApi.id) return true
   const model = modelByApiId(apiId)
-  return !!model && model.api.npm === templateApi.npm && model.api.url === templateApi.url
+  return (
+    !!model &&
+    model.api.npm === templateApi.npm &&
+    model.api.url === templateApi.url &&
+    wireAPI(model.api) === wireAPI(templateApi)
+  )
+}
+
+// Private header chat.headers uses to tell the fetch wrapper which model to send.
+const ROUTE_HEADER = "x-copilot-auto-route"
+const FETCH_WRAPPED = Symbol.for("opencode-github-copilot-auto-model.fetch")
+
+// opencode builds the auto's language model once, from the anchor's api.id, and its
+// Copilot/Anthropic SDKs take the request's model from that — they drop a `model`
+// passed through chat.params options. So the routed id travels in a private header
+// and is swapped into the JSON body here, just before the request leaves.
+function rewriteRoutedRequest(init: RequestInit | undefined): RequestInit | undefined {
+  if (!init?.headers) return init
+  const headers = new Headers(init.headers)
+  const model = headers.get(ROUTE_HEADER)
+  if (!model) return init
+  headers.delete(ROUTE_HEADER)
+  let body = init.body
+  if (typeof body === "string") {
+    try {
+      const parsed = JSON.parse(body) as { model?: unknown }
+      if (typeof parsed.model === "string" && parsed.model !== model) {
+        log(`request model ${parsed.model} -> ${model}`)
+        parsed.model = model
+        body = JSON.stringify(parsed)
+      }
+    } catch {
+      /* not JSON: send as-is */
+    }
+  }
+  return { ...init, headers, body }
+}
+
+// The Copilot auth loader and the SDKs resolve the global fetch per call, so one
+// wrapper sees every outgoing request; it only acts on requests carrying ROUTE_HEADER.
+function installRouteFetch() {
+  const current = globalThis.fetch as typeof fetch & { [FETCH_WRAPPED]?: true }
+  if (current[FETCH_WRAPPED]) return
+  const wrapped = (input: RequestInfo | URL, init?: RequestInit) => current(input, rewriteRoutedRequest(init))
+  globalThis.fetch = Object.assign(wrapped, current, { [FETCH_WRAPPED]: true }) as unknown as typeof fetch
 }
 
 // Whether this auto can send `apiId`: same endpoint as its anchor and, for
@@ -518,6 +572,7 @@ function withAutoModels(models: Record<string, Model>, autos: InjectedAuto[]) {
 
 const CopilotAutoModelPlugin: Plugin = async ({ client }, options) => {
   const opts = (options ?? {}) as Options
+  installRouteFetch()
   if (usesDeprecatedLabelLists(opts))
     log("reasoning/noReasoning options are ignored: POST /auto returns no reasoning verdict (use tier instead)")
   const conversations = new Map<string, Map<string, ConvState>>()
@@ -628,9 +683,9 @@ const CopilotAutoModelPlugin: Plugin = async ({ client }, options) => {
         conv.needsReEval = false
       }
 
+      // The model itself is swapped in by the fetch wrapper (see chat.headers).
       const decided = conv.route!.modelID
-      output.options.model = decided
-      log(`chat.params override ${auto.id} -> ${decided}`)
+      log(`chat.params route ${auto.id} -> ${decided}`)
       // opencode sized the params for the anchor; the routed model may reject
       // temperature (e.g. gpt-6-luna 400s with "not supported"). opencode itself passes
       // undefined for such models, despite the hook's `number` type.
@@ -648,9 +703,11 @@ const CopilotAutoModelPlugin: Plugin = async ({ client }, options) => {
       if (incoming.model.providerID !== PROVIDER_ID) return
       const auto = injectedAutoByID.get(incoming.model.id)
       if (!auto) return
-      const token = getConv(incoming.sessionID, auto.id).route?.sessionToken
-      if (!token) return
-      output.headers["Copilot-Session-Token"] = token
+      const route = getConv(incoming.sessionID, auto.id).route
+      if (!route) return
+      output.headers[ROUTE_HEADER] = route.modelID
+      if (!route.sessionToken) return
+      output.headers["Copilot-Session-Token"] = route.sessionToken
       log(`chat.headers added Copilot-Session-Token for ${auto.id}`)
     },
     provider: {

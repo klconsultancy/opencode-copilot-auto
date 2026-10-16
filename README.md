@@ -100,9 +100,14 @@ The plugin wires this into opencode's hooks:
   cloned from an anchor model (no network call: routing needs a prompt).
 - **`chat.message`** — captures the prompt text (and whether an image is attached).
 - **`chat.params`** — on the first turn of a conversation calls `POST /auto` and
-  overrides the outgoing model id.
+  pins the conversation to the selected model.
 - **`chat.headers`** — attaches `Copilot-Session-Token` when the server's pick is
-  the model being sent.
+  the model being sent, plus a private `x-copilot-auto-route` header.
+- **fetch wrapper** — opencode builds the auto's language model from the anchor's
+  `api.id`, and its Copilot/Anthropic SDKs ignore a `model` passed via
+  `chat.params` options. So the plugin wraps the global `fetch` once: requests
+  carrying `x-copilot-auto-route` get that header stripped and the JSON body's
+  `model` replaced. All other requests pass through untouched.
 
 > **Auto V1 is gone.** Until v0.2 this plugin used VS Code's old two-call flow
 > (`POST /models/session` for a candidate pool + `POST /models/session/intent`
@@ -142,6 +147,10 @@ to that endpoint, not the endpoint itself:
   pick goes through `@ai-sdk/anthropic` and cannot be sent by it.
 - `Auto Claude` / `Auto GPT` are additionally clamped to their family label, so
   `Auto GPT` will not send a Gemini pick even though they share a transport.
+- The routed model must also use the anchor's wire API: opencode sends GPT-5+
+  (except `gpt-5-mini`) over the Responses API and other Copilot models (MAI,
+  Gemini, older GPT) over Chat Completions, and the bodies differ. With a
+  `gpt-5.4` anchor, a `mai-code-1.1-flash` pick therefore falls back.
 - `POST /auto` picks a single model across all families, so a family auto only
   gets the Auto session (and discount) when the server picks its family.
 - A model the server picks that is missing from opencode's catalog cannot be
