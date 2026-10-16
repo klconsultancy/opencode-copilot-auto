@@ -10,49 +10,42 @@ VS Code uses). This plugin drives it from opencode and adds the models to the
 picker as **`Auto`** plus the default per-family autos (or any configured autos,
 which replace the defaults).
 
-> **What the UI shows:** the picker and status bar read **`Auto`** (static label;
-> the routing decision is surfaced as a transient toast — e.g. `Auto → gpt-5.4`,
-> or `Auto Claude → claude-sonnet-4.6 · no Auto session` when the server's pick
-> could not be used). The log has full detail (`chat.params override auto -> …`).
+> **What the UI shows:** the picker reads **`Auto`** with the anchor model's
+> metadata; the model each conversation is actually routed to is in the log
+> (`auto → gpt-6-luna for ses_…`, `request model gpt-5.4 -> gpt-6-luna`).
 
 ## Install
 
-This is the **1.x** line, for **opencode 1** (the `plugin` config key and the
-`server()` plugin API). opencode 2 uses a new plugin API; use the **2.x** line
-there.
+This is the **2.x** line, for **opencode 2** (the `plugins` config key and the
+`Plugin.define({ id, setup })` plugin API). For opencode 1 use the **1.x** line
+(branch `1.x`).
 
 | opencode | plugin version |
 |----------|----------------|
 | 1.x (≥ 1.18.29) | `opencode-github-copilot-auto-model@^1` |
 | 2.x | `opencode-github-copilot-auto-model@^2` |
 
-Add the package to `~/.config/opencode/opencode.json`:
+Add the package to `~/.config/opencode/opencode.json(c)`:
 
 ```jsonc
 {
-  "plugin": [
-    "opencode-github-copilot-auto-model@^1"
+  "plugins": [
+    "opencode-github-copilot-auto-model@^2"
   ]
 }
 ```
 
-opencode will install it automatically from npm on first run.
-
-> **Why not `github:m0wer/...`?** opencode installs `github:` plugins by having
-> npm's arborist git-clone the repo on startup. That clone takes ~4s, but
-> short-lived invocations (e.g. `opencode models`) dispose the instance before it
-> finishes, so arborist rolls back the partial install and the cache is left empty
-> on every launch. An npm tarball install has no clone and loads reliably.
-
+opencode installs it from npm on first run. Sign in to GitHub Copilot in
+opencode as usual; the plugin uses that connection.
 
 Optional configuration (all settings are optional; Copilot routing always runs):
 
 ```jsonc
 {
-  "plugin": [
-    [
-      "opencode-github-copilot-auto-model",
-      {
+  "plugins": [
+    {
+      "package": "opencode-github-copilot-auto-model@^2",
+      "options": {
         // Routing profile sent to POST /auto:
         // "efficiency" | "balance" (default) | "intelligence" | "fast".
         "tier": "balance",
@@ -60,7 +53,7 @@ Optional configuration (all settings are optional; Copilot routing always runs):
         // Ordered list of preferred models. The first one anchors the endpoint
         // of the `Auto` model and is the fallback when the server's pick cannot
         // be served by that endpoint. Accepts model keys or API ids.
-        "preferredModels": ["gpt-5.4"],
+        "preferredModels": ["gpt-6-luna"],
 
         // Additional picker autos, all from this one plugin instance.
         // When omitted, the plugin injects one default auto per supported family
@@ -68,11 +61,11 @@ Optional configuration (all settings are optional; Copilot routing always runs):
         // Set [] to disable the defaults; an explicit list replaces them.
         // `name` and `id` are optional; the plugin derives them when omitted.
         "autos": [
-          { "preferredModels": ["claude-sonnet-4.6"] },
-          { "name": "Auto Max", "preferredModels": ["gpt-5.4"], "tier": "intelligence" }
+          { "preferredModels": ["claude-sonnet-5.5"] },
+          { "name": "Auto Max", "preferredModels": ["gpt-6.1-sol"], "tier": "intelligence" }
         ]
       }
-    ]
+    }
   ]
 }
 ```
@@ -103,67 +96,69 @@ The server routes the prompt, picks **one** model and mints a session token
 (valid 24h, no refresh). Chat requests for that model carry the token in
 `Copilot-Session-Token`, which places them in Copilot's Auto pool and discount.
 
-The plugin wires this into opencode's hooks:
+The plugin wires this into opencode 2's plugin API:
 
-- **`provider.models`** — injects `github-copilot/auto` and the extra autos, each
-  cloned from an anchor model (no network call: routing needs a prompt).
-- **`chat.message`** — captures the prompt text (and whether an image is attached).
-- **`chat.params`** — on the first turn of a conversation calls `POST /auto` and
-  pins the conversation to the selected model.
-- **`chat.headers`** — attaches `Copilot-Session-Token` when the server's pick is
-  the model being sent, plus a private `x-copilot-auto-route` header.
-- **fetch wrapper** — opencode builds the auto's language model from the anchor's
-  `api.id`, and its Copilot/Anthropic SDKs ignore a `model` passed via
-  `chat.params` options. So the plugin wraps the global `fetch` once: requests
-  carrying `x-copilot-auto-route` get that header stripped and the JSON body's
-  `model` replaced. All other requests pass through untouched.
+- **`ctx.model.transform`** — injects `github-copilot/auto` and the extra autos,
+  each cloned from an anchor model in the live Copilot catalog (same SDK,
+  endpoint and `modelID`). No network call: routing needs a prompt.
+- **`session.hook("prompt")`** — captures the user's prompt (and whether an
+  image is attached).
+- **`session.hook("model.request")`** — on the first request of a conversation
+  calls `POST /auto` with the Copilot connection's token, pins the conversation
+  to the selected model and adds `Copilot-Session-Token`.
+- **`session.hook("http.request")`** — opencode built the request for the
+  anchor's `modelID`; the plugin swaps the routed model into the JSON body.
+- **`session.hook("context")`** — raises reasoning effort on the `intelligence`
+  tier.
+- **`session.hook("compaction")`** — re-routes on the next agent turn.
 
 > **Auto V1 is gone.** Until v0.2 this plugin used VS Code's old two-call flow
 > (`POST /models/session` for a candidate pool + `POST /models/session/intent`
 > for a reasoning verdict). VS Code removed that flow in August 2026, and the
-> legacy pool stopped receiving new models and shrank over time (Sonnet, Codex
-> and Haiku dropped out). `/models/session` is now only used as a fallback when
-> `/auto` fails.
+> legacy pool stopped receiving new models and shrank over time. `/models/session`
+> is now only used as a fallback when `/auto` fails.
 
 ### Routing flow
 
-1. **Turn 0 of a conversation**: `POST /auto` with the prompt and the auto's tier.
+1. **First request of a conversation**: `POST /auto` with the prompt and the
+   auto's tier.
 2. If the selected model can be sent through this auto's endpoint (see below),
    the conversation is pinned to it, with the session token.
 3. Otherwise the auto falls back to its anchor model **without** the token (full
-   price, outside the Auto pool) for the rest of that session. The toast and log
-   say so.
-4. **Turns 1+** reuse the pinned model (KV cache stability, same as VS Code).
-5. **Re-routing** happens after compaction (`session.compacted`), when the token is
-   within five minutes of expiry, or on the next turn after a failed routing call.
+   price, outside the Auto pool) for the rest of that session. The log says so.
+4. **Later requests** (tool steps, follow-up turns) reuse the pinned model (KV
+   cache stability, same as VS Code).
+5. **Re-routing** happens on the next agent turn after compaction, when the token
+   is within five minutes of expiry, or after a failed routing call.
 6. If `/auto` fails, the legacy `/models/session` pool is tried; if that fails too,
-   the anchor is used without a token and routing is retried on the next turn.
+   the anchor is used without a token and routing is retried on the next request.
 
 ### Reasoning effort
 
 On the `intelligence` tier the routed model's effort is raised
-(`reasoning_effort: high` for OpenAI/Copilot, extended-thinking budget for
-Anthropic). Other tiers keep the model default.
+(`reasoningEffort: high` on the Responses/Chat API, an extended-thinking budget
+on Anthropic Messages), unless a model variant is selected. Other tiers keep the
+model default.
 
 ### Within-family constraint
 
-Each injected auto model has **one fixed endpoint** (copied from its anchor
-model's `api.npm` + `api.url`). `chat.params` can only override the model id sent
-to that endpoint, not the endpoint itself:
+Each injected auto model has **one fixed endpoint** (cloned from its anchor).
+The plugin can only change the model id in the request body, not the endpoint or
+the body shape:
 
-- `Auto` (no preferences) anchors on the shared Copilot transport
-  (`@ai-sdk/github-copilot`), which serves GPT, MAI and Gemini picks. A Claude
-  pick goes through `@ai-sdk/anthropic` and cannot be sent by it.
+- A routed model must share the anchor's SDK and base URL (Claude rides
+  Anthropic Messages on `/v1`; GPT, MAI and Gemini ride the Copilot SDK) **and**
+  its wire API (`settings.endpoint` from the live catalog: `responses`, `chat` or
+  `messages`).
+- `Auto` (no preferences) anchors on a GPT model served over Responses, which is
+  what `POST /auto` picks most; MAI Code also qualifies, Gemini (Chat) and Claude
+  (Messages) do not.
 - `Auto Claude` / `Auto GPT` are additionally clamped to their family label, so
-  `Auto GPT` will not send a Gemini pick even though they share a transport.
-- The routed model must also use the anchor's wire API: opencode sends GPT-5+
-  (except `gpt-5-mini`) over the Responses API and other Copilot models (MAI,
-  Gemini, older GPT) over Chat Completions, and the bodies differ. With a
-  `gpt-5.4` anchor, a `mai-code-1.1-flash` pick therefore falls back.
+  `Auto GPT` will not send a MAI pick even though they share an endpoint.
 - `POST /auto` picks a single model across all families, so a family auto only
   gets the Auto session (and discount) when the server picks its family.
 - A model the server picks that is missing from opencode's catalog cannot be
-  sent either (the endpoint is unknown); the anchor is used instead.
+  sent either; the anchor is used instead.
 
 ### Multiple autos from one plugin entry
 
@@ -186,11 +181,11 @@ Notes:
 
 ## First-party gating
 
-VS Code sends `Copilot-Integration-Id` (and `Editor-Version` /
-`Editor-Plugin-Version`) on `POST /auto`. `copilotHeaders()` keeps those
-commented out so the minimal set is tried first; the log shows whether `/auto`
-answered (`auto decision: …`) or returned an error (`auto fetch non-ok: …`), in
-which case the legacy pool is used.
+VS Code also sends `Copilot-Integration-Id`, `Editor-Version` and
+`Editor-Plugin-Version` on `POST /auto`. The plugin does not, to avoid
+impersonating VS Code; `/auto` answers without them. The log shows whether
+`/auto` answered (`auto decision: …`) or returned an error (`auto fetch non-ok:
+…`), in which case the legacy pool is used.
 
 ## Logging
 
@@ -201,7 +196,7 @@ tail -f ~/.local/state/opencode-github-copilot-auto-model/plugin.log
 ```
 
 You'll see each routing decision (`auto decision: selected_model=…`), fallbacks,
-and the per-turn model override. Prompts and session tokens are never logged (only
+and the per-request model swap. Prompts and session tokens are never logged (only
 the prompt length).
 
 ## Development
@@ -217,6 +212,11 @@ bun run build
 
 Publishing is done locally using npm's browser-based OAuth login (no long-lived
 tokens required).
+
+Two release lines share the package name: **2.x** (opencode 2) is published from
+`master` under npm's default `latest` tag; **1.x** (opencode 1) is maintained on
+the `1.x` branch and published with `npm publish --tag v1`, so a 1.x patch never
+becomes `latest`.
 
 1. Bump the version in `package.json`.
 2. Commit and tag:
