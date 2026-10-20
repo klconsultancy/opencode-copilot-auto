@@ -250,13 +250,13 @@ function resolvePreferred(catalog: CatalogModel[], preferred: string[]): Catalog
   return resolved
 }
 
-// Unclamped autos anchor on a GPT model sent over the Responses API when possible:
-// that is what POST /auto picks most, so it keeps the most picks servable.
+// Autos anchor on a GPT model sent over the Responses API when possible: that is what
+// POST /auto picks most, so it keeps the most picks servable. Catalog order alone
+// could anchor on a Chat-only model (gpt-5-mini, kimi-k3) and reject every pick.
 function pickAnchor(catalog: CatalogModel[], familyFilter?: string): CatalogModel | undefined {
   const candidates = catalog.filter((m) => !familyFilter || familyLabel(m) === familyFilter)
   const enabled = candidates.filter((m) => m.enabled)
   const pool = enabled.length ? enabled : candidates
-  if (familyFilter) return pool[0]
   return pool.find((m) => familyLabel(m) === "GPT" && m.wire === "responses") ?? pool.find((m) => m.wire !== "messages") ?? pool[0]
 }
 

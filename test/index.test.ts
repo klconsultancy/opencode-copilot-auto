@@ -201,6 +201,14 @@ describe("catalog injection", () => {
     expect(store.get("auto-2")).toBeUndefined()
   })
 
+  test("anchors on a GPT Responses model even when Chat-only models come first", async () => {
+    const kimi = makeModel("kimi-k3", "Kimi K3", "kimi", "chat")
+    const mini = makeModel("gpt-5-mini", "GPT-5 mini", "gpt-5-mini", "chat")
+    const { store } = await setup([kimi, mini, ...catalog])
+    expect(store.get("auto")!.modelID).toBe("gpt-5.4")
+    expect(store.get("auto-gpt")!.modelID).toBe("gpt-5.4")
+  })
+
   test("preferredModels anchors by model key, in order", async () => {
     const { store } = await setup(catalog, { preferredModels: ["nope", "gpt-6-luna"] })
     expect(store.get("auto")!.modelID).toBe("gpt-6-luna")
