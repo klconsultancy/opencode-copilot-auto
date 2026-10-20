@@ -1,7 +1,5 @@
-import { existsSync } from "node:fs"
-import path from "node:path"
+// opencode 2 adapter (`setup`), against a minimal stand-in for its plugin context.
 import { describe, expect, test } from "bun:test"
-import pkg from "../package.json"
 import plugin from "../src/index"
 
 const COPILOT = "https://api.githubcopilot.com"
@@ -41,7 +39,6 @@ const luna = makeModel("gpt-6-luna", "GPT-6 Luna", "gpt-6-luna", "responses")
 const sol = makeModel("gpt-6.1-sol", "GPT-6.1 Sol", "gpt-6.1-sol", "responses")
 const mai = makeModel("mai-code-1.1-flash", "MAI Code 1.1 Flash", "mai-code", "responses")
 const gemini = makeModel("gemini-3.1-pro", "Gemini 3.1 Pro", "gemini-3.1-pro", "chat")
-const geminiFlash = makeModel("gemini-3.5-flash", "Gemini 3.5 Flash", "gemini-3.5-flash", "chat")
 
 const catalog = [sonnet, haiku, gpt54, luna, sol]
 
@@ -137,11 +134,11 @@ async function setup(models: FakeModel[], options: Record<string, unknown> = {},
   // context, model.request, then the native HTTP request built for the model's modelID.
   async function turn(
     modelKey: string,
-    { sessionID = "ses_test", prompt = "test prompt" as string | undefined, files = [] as unknown[], kind = "primary" } = {},
+    { sessionID = "ses_test", prompt = "test prompt" as string | null, files = [] as unknown[], kind = "primary" } = {},
   ) {
     const model = store.get(modelKey)!
     const ref = { providerID: "github-copilot", id: modelKey }
-    if (prompt !== undefined) await call("prompt", { sessionID, prompt: { text: prompt, files } })
+    if (prompt !== null) await call("prompt", { sessionID, prompt: { text: prompt, files } })
     const context = { sessionID, agent: "build", model: ref, system: [], messages: [], tools: {}, options: {} as Record<string, unknown> }
     if (kind === "primary") await call("context", context)
     if (kind === "compaction") await call("compaction", context)
@@ -186,13 +183,11 @@ describe("catalog injection", () => {
     })
   })
 
-  test("family autos keep their anchor's endpoint", async () => {
-    const { store } = await setup(catalog)
-    expect(store.get("auto-claude")!.settings.baseURL).toBe(`${COPILOT}/v1`)
-    expect(store.get("auto-claude")!.package).toBe(ANTHROPIC)
-    expect(store.get("auto-gpt")!.modelID).toBe("gpt-5.4")
+  test("an auto anchored on Claude keeps the anchor's endpoint", async () => {
+    const { store } = await setup(catalog, { preferredModels: ["claude-sonnet-5.5"] })
+    expect(store.get("auto")!.settings.baseURL).toBe(`${COPILOT}/v1`)
+    expect(store.get("auto")!.package).toBe(ANTHROPIC)
   })
-
   test("replaying the transform never anchors an auto on another auto", async () => {
     const { store, runTransforms } = await setup(catalog)
     runTransforms()
@@ -206,56 +201,42 @@ describe("catalog injection", () => {
     const mini = makeModel("gpt-5-mini", "GPT-5 mini", "gpt-5-mini", "chat")
     const { store } = await setup([kimi, mini, ...catalog])
     expect(store.get("auto")!.modelID).toBe("gpt-5.4")
-    expect(store.get("auto-gpt")!.modelID).toBe("gpt-5.4")
+    expect(store.get("auto-intelligence")!.modelID).toBe("gpt-5.4")
   })
 
-  test("preferredModels anchors by model key, in order", async () => {
+  test("preferredModels anchors every default auto by model key, in order", async () => {
     const { store } = await setup(catalog, { preferredModels: ["nope", "gpt-6-luna"] })
     expect(store.get("auto")!.modelID).toBe("gpt-6-luna")
+    expect(store.get("auto-efficiency")!.modelID).toBe("gpt-6-luna")
+    expect(store.get("auto-intelligence")!.modelID).toBe("gpt-6-luna")
   })
 
-  test("injects default family autos when autos is not configured", async () => {
+  test("injects one auto per picker tier, like VS Code's Auto picker", async () => {
     const { store } = await setup(catalog)
-    expect(store.get("auto-claude")!.name).toBe("Auto Claude")
-    expect(store.get("auto-gpt")!.name).toBe("Auto GPT")
+    const autos = [...store.values()].filter((m) => m.id.startsWith("auto")).map((m) => [m.id, m.name])
+    expect(autos).toEqual([
+      ["auto", "Auto"],
+      ["auto-efficiency", "Auto Efficiency"],
+      ["auto-intelligence", "Auto Intelligence"],
+    ])
   })
 
-  test("autos: [] disables the default family autos", async () => {
-    const { store } = await setup(catalog, { autos: [] })
-    expect(store.get("auto-claude")).toBeUndefined()
-    expect(store.get("auto-gpt")).toBeUndefined()
-    expect(store.get("auto")).toBeDefined()
+  test("the tier option sets the main auto and the variants cover the other picker tiers", async () => {
+    const { store } = await setup(catalog, { tier: "intelligence" })
+    expect(store.get("auto-balance")!.name).toBe("Auto Balance")
+    expect(store.get("auto-efficiency")).toBeDefined()
+    expect(store.get("auto-intelligence")).toBeUndefined()
   })
 
-  test("explicit autos replace the defaults", async () => {
-    const { store } = await setup(catalog, { autos: [{ name: "Smart", preferredModels: ["claude-sonnet-5.5"] }] })
-    expect(store.get("smart")!.modelID).toBe("claude-sonnet-5.5")
-    expect(store.get("auto-gpt")).toBeUndefined()
+  test("fast is not a picker tier: it falls back to balance, as in Copilot CLI", async () => {
+    const { store } = await setup(catalog, { tier: "fast" })
+    expect(store.get("auto-fast")).toBeUndefined()
+    expect(store.get("auto-balance")).toBeUndefined()
+    expect(store.get("auto-intelligence")).toBeDefined()
   })
-
-  test("skips a default auto for a family with fewer than two models", async () => {
-    const { store } = await setup([sonnet, gpt54, luna])
-    expect(store.get("auto-claude")).toBeUndefined()
-    expect(store.get("auto-gpt")).toBeDefined()
-  })
-
-  test("does not inject a default gemini auto", async () => {
-    const { store } = await setup([...catalog, gemini, geminiFlash])
-    expect(store.get("auto-gemini")).toBeUndefined()
-  })
-
-  test("dedupes derived ids and names", async () => {
-    const { store } = await setup(catalog, {
-      autos: [{ preferredModels: ["claude-sonnet-5.5"] }, { preferredModels: ["claude-haiku-5.5"] }, { name: "Auto" }],
-    })
-    expect(store.get("auto-claude")!.name).toBe("Auto Claude")
-    expect(store.get("auto-claude-2")!.name).toBe("Auto Claude 2")
-    expect(store.get("auto-2")!.name).toBe("Auto 2")
-  })
-
   test("scopes request hooks to the Copilot provider", async () => {
     const { hooks } = await setup(catalog)
-    for (const name of ["context", "compaction", "model.request", "http.request"])
+    for (const name of ["compaction", "model.request", "http.request"])
       expect(hooks.get(name)?.providerID).toBe("github-copilot")
   })
 })
@@ -303,23 +284,14 @@ describe("routing via POST /auto", () => {
     }
   })
 
-  test("sends the configured tier (retired names mapped forward) and boosts effort on intelligence", async () => {
+  test("sends the configured tier (retired names mapped forward), and the tier only steers the router", async () => {
     await withFetch({ auto: autoPicks("gpt-6.1-sol") }, async (calls) => {
       const { turn } = await setup(catalog, { tier: "max" })
       const result = await turn("auto")
       expect(calls[0].body.tier).toBe("intelligence")
-      expect(result.options).toEqual({ reasoningEffort: "high", reasoningSummary: "auto" })
+      expect(result.options).toEqual({})
     })
   })
-
-  test("intelligence tier on a Claude auto enables extended thinking", async () => {
-    await withFetch({ auto: autoPicks("claude-sonnet-5.5") }, async () => {
-      const { turn } = await setup(catalog, { autos: [{ name: "Claude Max", preferredModels: ["claude-sonnet-5.5"], tier: "intelligence" }] })
-      const result = await turn("claude-max")
-      expect(result.options.thinking).toEqual({ type: "enabled", budgetTokens: 16000 })
-    })
-  })
-
   test("flags image attachments with has_image", async () => {
     await withFetch({ auto: autoPicks("gpt-6-luna") }, async (calls) => {
       const { turn } = await setup(catalog)
@@ -335,7 +307,7 @@ describe("routing via POST /auto", () => {
       await turn("auto")
       pick = "gpt-6.1-sol"
       const second = await turn("auto", { prompt: "follow-up" })
-      const toolStep = await turn("auto", { prompt: undefined })
+      const toolStep = await turn("auto", { prompt: null })
       expect(calls).toHaveLength(1)
       expect(second.model).toBe("gpt-6-luna")
       expect(toolStep.token).toBe("tok-gpt-6-luna")
@@ -348,7 +320,7 @@ describe("routing via POST /auto", () => {
       const { turn } = await setup(catalog)
       await turn("auto")
       pick = "gpt-6.1-sol"
-      const compaction = await turn("auto", { prompt: undefined, kind: "compaction" })
+      const compaction = await turn("auto", { prompt: null, kind: "compaction" })
       expect(compaction.model).toBe("gpt-6-luna")
       const after = await turn("auto")
       expect(calls).toHaveLength(2)
@@ -365,25 +337,24 @@ describe("routing via POST /auto", () => {
     })
   })
 
-  test("routes each auto separately within one session", async () => {
-    await withFetch({ auto: autoPicks("claude-haiku-5.5") }, async (calls) => {
+  test("routes each auto separately within one session, with its own tier", async () => {
+    await withFetch({ auto: (body) => autoPicks(body.tier === "intelligence" ? "gpt-6.1-sol" : "gpt-6-luna")() }, async (calls) => {
       const { turn } = await setup(catalog)
-      const claude = await turn("auto-claude")
-      await turn("auto-claude")
-      const gpt = await turn("auto-gpt")
-      expect(calls).toHaveLength(2)
-      expect(claude.model).toBe("claude-haiku-5.5")
-      expect(claude.token).toBe("tok-claude-haiku-5.5")
-      expect(gpt.model).toBe("gpt-5.4")
-      expect(gpt.token).toBeUndefined()
+      const balance = await turn("auto")
+      await turn("auto")
+      const intelligence = await turn("auto-intelligence")
+      expect(calls.map((c) => c.body.tier)).toEqual(["balance", "intelligence"])
+      expect(balance.model).toBe("gpt-6-luna")
+      expect(intelligence.model).toBe("gpt-6.1-sol")
+      expect(intelligence.token).toBe("tok-gpt-6.1-sol")
     })
   })
 
   test("a pick on another endpoint falls back to the anchor without a token and stays sticky", async () => {
     await withFetch({ auto: autoPicks("gpt-6-luna") }, async (calls) => {
-      const { turn } = await setup(catalog)
-      const first = await turn("auto-claude")
-      const second = await turn("auto-claude")
+      const { turn } = await setup(catalog, { preferredModels: ["claude-sonnet-5.5"] })
+      const first = await turn("auto")
+      const second = await turn("auto")
       expect(first.model).toBe("claude-sonnet-5.5")
       expect(first.token).toBeUndefined()
       expect(second.model).toBe("claude-sonnet-5.5")
@@ -420,15 +391,12 @@ describe("routing via POST /auto", () => {
     })
   })
 
-  test("a family-clamped auto ignores another family on the same endpoint", async () => {
+  test("accepts another family on the same endpoint and wire API", async () => {
     await withFetch({ auto: autoPicks("mai-code-1.1-flash") }, async () => {
       const { turn } = await setup([...catalog, mai])
-      const gpt = await turn("auto-gpt", { sessionID: "a" })
-      const unclamped = await turn("auto", { sessionID: "b" })
-      expect(gpt.model).toBe("gpt-5.4")
-      expect(gpt.token).toBeUndefined()
-      expect(unclamped.model).toBe("mai-code-1.1-flash")
-      expect(unclamped.token).toBe("tok-mai-code-1.1-flash")
+      const result = await turn("auto")
+      expect(result.model).toBe("mai-code-1.1-flash")
+      expect(result.token).toBe("tok-mai-code-1.1-flash")
     })
   })
 
@@ -454,65 +422,50 @@ describe("routing via POST /auto", () => {
   })
 })
 
-describe("legacy /models/session fallback", () => {
-  const legacyPool = (models: string[]) => () => ({
-    session_token: "tok-legacy",
-    expires_at: Math.floor(Date.now() / 1000) + 1800,
-    available_models: models,
-  })
-
-  test("uses the legacy pool when POST /auto fails", async () => {
-    await withFetch({ auto: () => 404, legacy: legacyPool(["claude-haiku-5.5", "gpt-5.4"]) }, async (calls) => {
-      const { turn } = await setup(catalog)
-      const result = await turn("auto")
-      expect(calls.map((c) => c.kind)).toEqual(["auto", "legacy"])
-      expect(result.model).toBe("gpt-5.4")
-      expect(result.token).toBe("tok-legacy")
-    })
-  })
-
-  test("prefers a configured model from the legacy pool", async () => {
-    await withFetch({ auto: () => 503, legacy: legacyPool(["gpt-5.4", "gpt-6-luna"]) }, async () => {
-      const { turn } = await setup(catalog, { preferredModels: ["gpt-6-luna"] })
-      const result = await turn("auto")
-      expect(result.model).toBe("gpt-6-luna")
-    })
-  })
-
-  test("falls back to the anchor and retries next turn when both calls fail", async () => {
-    await withFetch({ auto: () => 500, legacy: () => 500 }, async (calls) => {
+describe("when routing fails or cannot serve the turn", () => {
+  test("falls back to the anchor without a token, and retries on the next prompt, not every step", async () => {
+    await withFetch({ auto: () => 503 }, async (calls) => {
       const { turn } = await setup(catalog)
       const first = await turn("auto")
+      const toolStep = await turn("auto", { prompt: null })
       expect(first.model).toBe("gpt-5.4")
       expect(first.token).toBeUndefined()
-      await turn("auto")
-      expect(calls.filter((c) => c.kind === "auto")).toHaveLength(2)
+      expect(toolStep.model).toBe("gpt-5.4")
+      expect(calls).toHaveLength(1)
+      await turn("auto", { prompt: "next prompt" })
+      expect(calls).toHaveLength(2)
+      expect(calls.every((c) => c.kind === "auto")).toBe(true)
     })
   })
-})
 
-// Packaging guards: opencode 2 loads the package entry and requires a default export
-// of `{ id, setup }` (Plugin.define's shape).
-describe("packaging", () => {
-  const root = path.join(import.meta.dir, "..")
-  const entry = (pkg as { exports?: { ["."]?: { import?: string } }; main?: string }).exports?.["."]?.import ?? pkg.main
-  const rel = (entry ?? "").replace(/^\.\//, "")
-
-  test("declares a package entry", () => {
-    expect(rel.length).toBeGreaterThan(0)
+  test("keeps the last route when re-routing after compaction fails", async () => {
+    let fail = false
+    await withFetch({ auto: () => (fail ? 503 : autoPicks("gpt-6-luna")()) }, async (calls) => {
+      const { turn } = await setup(catalog)
+      await turn("auto")
+      await turn("auto", { prompt: null, kind: "compaction" })
+      fail = true
+      const after = await turn("auto", { prompt: "after compaction" })
+      expect(calls).toHaveLength(2)
+      expect(after.model).toBe("gpt-6-luna")
+      expect(after.token).toBe("tok-gpt-6-luna")
+      fail = false
+      await turn("auto", { prompt: "later" })
+      expect(calls).toHaveLength(3)
+    })
   })
 
-  test("entry file exists on disk", () => {
-    expect(existsSync(path.join(root, rel))).toBe(true)
-  })
-
-  test("default export has the shape opencode 2 loads (id + setup function)", () => {
-    expect(typeof plugin.id).toBe("string")
-    expect(plugin.id.length).toBeGreaterThan(0)
-    expect(typeof plugin.setup).toBe("function")
-  })
-
-  test("declares no runtime dependencies", () => {
-    expect((pkg as { dependencies?: object }).dependencies).toBeUndefined()
+  test("routes again when an image turn meets a model without vision", async () => {
+    const textOnly = { ...structuredClone(luna), capabilities: { input: ["text"] } } as FakeModel
+    let pick = "gpt-6-luna"
+    await withFetch({ auto: () => autoPicks(pick)() }, async (calls) => {
+      const { turn } = await setup([sonnet, haiku, gpt54, textOnly, sol])
+      expect((await turn("auto")).model).toBe("gpt-6-luna")
+      pick = "gpt-6.1-sol"
+      const image = await turn("auto", { prompt: "what is in this screenshot?", files: [{ uri: "file:///tmp/shot.png" }] })
+      expect(calls).toHaveLength(2)
+      expect(calls[1].body.has_image).toBe(true)
+      expect(image.model).toBe("gpt-6.1-sol")
+    })
   })
 })

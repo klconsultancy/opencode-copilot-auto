@@ -1,7 +1,7 @@
 {
-  "name": "opencode-github-copilot-auto-model",
-  "version": "2.0.0",
-  "description": "Expose GitHub Copilot's Auto model in opencode 2's model picker",
+  "name": "@klconsultancy/opencode-copilot-auto",
+  "version": "1.0.0",
+  "description": "GitHub Copilot's Auto model for opencode 1 and 2: VS Code's POST /auto routing, with one picker model per tier",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -23,30 +23,33 @@
     "release": "npm login --auth-type=web && npm publish"
   },
   "devDependencies": {
+    "@opencode-ai/plugin": "1.19.2",
+    "@opencode-ai/sdk": "1.19.2",
     "@opencode/plugin": "2.0.30",
     "@types/bun": "latest",
     "typescript": "^5.5.0"
   },
   "keywords": [
     "opencode",
-    "plugin",
+    "opencode-plugin",
     "github-copilot",
+    "copilot-auto",
     "auto-model"
   ],
   "license": "MIT",
-  "author": "m0wer",
+  "author": "Kristof Lemmens (KL Consultancy)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/m0wer/opencode-github-copilot-auto-model.git"
+    "url": "git+https://github.com/klconsultancy/opencode-copilot-auto.git"
   },
   "bugs": {
-    "url": "https://github.com/m0wer/opencode-github-copilot-auto-model/issues"
+    "url": "https://github.com/klconsultancy/opencode-copilot-auto/issues"
   },
-  "homepage": "https://github.com/m0wer/opencode-github-copilot-auto-model#readme",
+  "homepage": "https://github.com/klconsultancy/opencode-copilot-auto#readme",
   "publishConfig": {
     "access": "public"
   },
-  "engines": {
-    "bun": ">=1.1.0"
-  }
+  "contributors": [
+    "m0wer (original opencode-github-copilot-auto-model)"
+  ]
 }

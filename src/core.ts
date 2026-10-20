@@ -1,24 +1,20 @@
 // Copilot Auto routing, independent of opencode's plugin API: tiers, the POST /auto
-// call (plus the legacy /models/session fallback), which autos to inject and which
-// server pick an auto can actually send.
-import { randomUUID } from "node:crypto"
+// call, which autos to inject and which server pick an auto can actually send.
+// Mirrors VS Code's Copilot Auto (extensions/copilot/src/platform/endpoint in
+// microsoft/vscode: automodeService.ts, autoV2Fetcher.ts, autoModeTiers.ts).
 import { appendFile, mkdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 
+export const PLUGIN_ID = "opencode-copilot-auto"
 export const PROVIDER_ID = "github-copilot"
 export const MODEL_ID = "auto"
 export const DEFAULT_BASE_URL = "https://api.githubcopilot.com"
 
 // Matches `@vscode/copilot-api` 0.5.x (`_mixinHeaders`) and opencode's own Copilot provider.
+// No editor or integration headers: POST /auto answers without them, and they would
+// impersonate VS Code.
 const COPILOT_API_VERSION = "2026-08-01"
-
-// Stand-ins for the per-install ids VS Code stamps on every gated Copilot request.
-// Editor-Version / Editor-Plugin-Version / Copilot-Integration-Id are deliberately not
-// sent: POST /auto answers without them, and they would impersonate VS Code.
-const VSCODE_SESSION_ID = `${randomUUID()}${Date.now()}`
-const VSCODE_MACHINE_ID = randomUUID().replace(/-/g, "")
-const VSCODE_DEVICE_ID = randomUUID()
 
 // VS Code's AutoV2Fetcher aborts POST /auto after 5s.
 const AUTO_TIMEOUT_MS = 5000
@@ -27,10 +23,14 @@ const AUTO_TIMEOUT_MS = 5000
 // request cannot outlive its token.
 export const SESSION_REFRESH_SKEW_MS = 5 * 60_000
 
-// Routing profiles accepted by POST /auto (VS Code's autoModeTiers.ts). A tier is
-// picked per session and biases which models the server may choose from.
+// Routing profiles accepted by POST /auto. A tier is picked per conversation and
+// biases which models the router may choose from; it is not sent to the model.
 export const AUTO_TIERS = ["efficiency", "balance", "intelligence", "fast"] as const
 export type AutoTier = (typeof AUTO_TIERS)[number]
+// The tiers VS Code's Auto picker and Copilot CLI's /model offer. `fast` is VS Code's
+// internal inline-chat default and was dropped from Copilot CLI (1.0.89), where a
+// stored `fast` falls back to balance; so does it here.
+export const PICKER_TIERS: readonly AutoTier[] = ["efficiency", "balance", "intelligence"]
 export const DEFAULT_TIER: AutoTier = "balance"
 // Retired names the server still accepts; VS Code maps them forward on read.
 const RETIRED_TIERS: Record<string, AutoTier> = { eco: "efficiency", balanced: "balance", max: "intelligence" }
@@ -51,33 +51,17 @@ export type CatalogModel = {
   transport: string
   wire: Wire
   enabled: boolean
-}
-
-export type AutoConfig = {
-  id?: string
-  name?: string
-  preferredModels?: string[]
-  tier?: string
-  /** @deprecated POST /auto returns no reasoning verdict; ignored. */
-  reasoning?: string[]
-  /** @deprecated POST /auto returns no reasoning verdict; ignored. */
-  noReasoning?: string[]
+  // Accepts image input. A turn with an image needs a vision model.
+  vision: boolean
 }
 
 export type Options = {
-  // Ordered list of preferred model keys or API ids. The first one anchors the
-  // auto's endpoint and is the fallback when the server's pick cannot be served.
-  preferredModels?: string[]
-  // Routing profile sent to POST /auto: efficiency | balance | intelligence | fast.
+  // Tier of the main `auto` model (efficiency | balance | intelligence), like Copilot
+  // CLI's startup default. The other picker tiers get their own auto next to it.
   tier?: string
-  /** @deprecated POST /auto returns no reasoning verdict; ignored. */
-  reasoning?: string[]
-  /** @deprecated POST /auto returns no reasoning verdict; ignored. */
-  noReasoning?: string[]
-  // Additional injected autos. When omitted, one default auto is injected per
-  // supported family (Claude, GPT) with at least two catalog models. Pass [] to
-  // disable the defaults, or an explicit list to replace them.
-  autos?: AutoConfig[]
+  // Ordered list of model keys or API ids to anchor the autos on. The anchor's
+  // endpoint carries every request an auto sends, and it is the fallback model.
+  preferredModels?: string[]
 }
 
 // An auto as injected into the picker: cloned from its anchor model, whose endpoint
@@ -86,20 +70,13 @@ export type AutoSpec = {
   id: string
   name: string
   tier: AutoTier
-  preferredAPIIDs: string[]
   anchor: CatalogModel
-  // Clamp to one family label (e.g. "Claude"), even when another family shares the
-  // transport (GPT, MAI and Gemini all ride the Copilot SDK).
-  familyFilter?: string
 }
 
-// A server routing result: the model(s) the session may bill, plus the session token
-// that places chat requests in Copilot's Auto pool (and its discount).
+// A POST /auto result: the model it picked plus the session token that places chat
+// requests in Copilot's Auto pool, where they get the Auto discount.
 export type AutoSession = {
-  // "auto": POST /auto picked exactly one model for the prompt.
-  // "legacy": POST /models/session returned a pool; used only when /auto fails.
-  source: "auto" | "legacy"
-  models: string[]
+  modelID: string
   sessionToken: string
   expiresAtMs: number
 }
@@ -118,16 +95,16 @@ export type Route = {
 
 // --- logging ----------------------------------------------------------------------------
 // File logger — keeps the TUI clean.
-// Tail ~/.local/state/opencode-github-copilot-auto-model/plugin.log to observe.
+// Tail ~/.local/state/opencode-copilot-auto/plugin.log to observe.
 function logFile() {
   if (process.platform === "win32")
     return path.join(
       process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local"),
-      "opencode-github-copilot-auto-model",
+      PLUGIN_ID,
       "plugin.log",
     )
   const xdg = process.env.XDG_STATE_HOME
-  return path.join(xdg ?? path.join(homedir(), ".local", "state"), "opencode-github-copilot-auto-model", "plugin.log")
+  return path.join(xdg ?? path.join(homedir(), ".local", "state"), PLUGIN_ID, "plugin.log")
 }
 
 let logReady: Promise<void> | undefined
@@ -142,24 +119,9 @@ export function normalizeTier(value: string | undefined): AutoTier {
   const raw = value?.trim().toLowerCase()
   if (!raw) return DEFAULT_TIER
   const tier = RETIRED_TIERS[raw] ?? raw
-  if ((AUTO_TIERS as readonly string[]).includes(tier)) return tier as AutoTier
-  log(`ignoring unknown tier "${value}"; using ${DEFAULT_TIER}`)
+  if ((PICKER_TIERS as readonly string[]).includes(tier)) return tier as AutoTier
+  log(`ignoring tier "${value}" (not one of ${PICKER_TIERS.join(", ")}); using ${DEFAULT_TIER}`)
   return DEFAULT_TIER
-}
-
-function normalizeList(values: string[] | undefined): string[] {
-  if (!values?.length) return []
-  const deduped: string[] = []
-  for (const v of values) {
-    const s = v.trim()
-    if (s && !deduped.includes(s)) deduped.push(s)
-  }
-  return deduped
-}
-
-export function usesDeprecatedLabelLists(options: Options): boolean {
-  const configs: AutoConfig[] = [options, ...(options.autos ?? [])]
-  return configs.some((c) => !!c.reasoning?.length || !!c.noReasoning?.length)
 }
 
 export function familyLabel(model?: Pick<CatalogModel, "key" | "apiID" | "name" | "family" | "wire">): string | undefined {
@@ -176,143 +138,75 @@ export function familyLabel(model?: Pick<CatalogModel, "key" | "apiID" | "name" 
   return undefined
 }
 
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-}
-
-function uniqueValue(base: string, used: Set<string>, suffix = "-"): string {
-  let value = base || "auto"
-  let counter = 2
-  while (used.has(value)) {
-    value = `${base}${suffix}${counter}`
-    counter += 1
+function resolvePreferred(catalog: CatalogModel[], preferred: string[] | undefined): CatalogModel | undefined {
+  for (const token of preferred ?? []) {
+    const key = token.trim()
+    const model = catalog.find((m) => m.key === key) ?? catalog.find((m) => m.apiID === key)
+    if (model) return model
   }
-  used.add(value)
-  return value
-}
-
-type AutoDraft = {
-  requestedID?: string
-  requestedName?: string
-  preferredModels: string[]
-  tier?: string
-  legacy: boolean
-  index: number
-  familyFilter?: string
-}
-
-// Families injected as per-family autos when `autos` is not configured; Gemini and
-// others stay opt-in.
-const DEFAULT_AUTO_FAMILIES = ["Claude", "GPT"]
-
-function autoDrafts(options: Options, catalog: CatalogModel[]): AutoDraft[] {
-  const drafts: AutoDraft[] = [
-    {
-      requestedID: MODEL_ID,
-      requestedName: "Auto",
-      preferredModels: normalizeList(options.preferredModels),
-      tier: options.tier,
-      legacy: true,
-      index: 0,
-    },
-  ]
-  if (options.autos === undefined) {
-    // One default auto per supported family with at least two catalog models (with a
-    // single model the auto adds nothing over picking that model directly).
-    for (const [index, label] of DEFAULT_AUTO_FAMILIES.entries()) {
-      if (catalog.filter((m) => familyLabel(m) === label).length < 2) continue
-      drafts.push({ preferredModels: [], legacy: false, index: index + 1, familyFilter: label })
-    }
-    return drafts
-  }
-  for (const [index, auto] of options.autos.entries()) {
-    drafts.push({
-      requestedID: auto.id?.trim() || undefined,
-      requestedName: auto.name?.trim() || undefined,
-      preferredModels: normalizeList(auto.preferredModels),
-      tier: auto.tier,
-      legacy: false,
-      index: index + 1,
-    })
-  }
-  return drafts
-}
-
-function resolvePreferred(catalog: CatalogModel[], preferred: string[]): CatalogModel[] {
-  const resolved: CatalogModel[] = []
-  for (const token of preferred) {
-    const model = catalog.find((m) => m.key === token) ?? catalog.find((m) => m.apiID === token)
-    if (model && !resolved.includes(model)) resolved.push(model)
-  }
-  return resolved
+  return undefined
 }
 
 // Autos anchor on a GPT model sent over the Responses API when possible: that is what
-// POST /auto picks most, so it keeps the most picks servable. Catalog order alone
-// could anchor on a Chat-only model (gpt-5-mini, kimi-k3) and reject every pick.
-function pickAnchor(catalog: CatalogModel[], familyFilter?: string): CatalogModel | undefined {
-  const candidates = catalog.filter((m) => !familyFilter || familyLabel(m) === familyFilter)
-  const enabled = candidates.filter((m) => m.enabled)
-  const pool = enabled.length ? enabled : candidates
+// POST /auto picks, so it keeps the picks servable. Catalog order alone could anchor
+// on a Chat-only model (gpt-5-mini, kimi-k3) and reject every pick.
+function pickAnchor(catalog: CatalogModel[]): CatalogModel | undefined {
+  const enabled = catalog.filter((m) => m.enabled)
+  const pool = enabled.length ? enabled : catalog
   return pool.find((m) => familyLabel(m) === "GPT" && m.wire === "responses") ?? pool.find((m) => m.wire !== "messages") ?? pool[0]
 }
 
-// Which autos to inject for this catalog. `taken` holds model ids already in use, so
-// derived ids never collide with real models.
-export function resolveAutos(options: Options, catalog: CatalogModel[], taken: Iterable<string>): AutoSpec[] {
-  const usedIDs = new Set<string>([...taken, MODEL_ID])
-  const usedNames = new Set<string>(["Auto"])
-  const autos: AutoSpec[] = []
-  for (const draft of autoDrafts(options, catalog)) {
-    const preferred = resolvePreferred(catalog, draft.preferredModels)
-    const anchor = preferred[0] ?? pickAnchor(catalog, draft.familyFilter)
-    if (!anchor) continue
-    const label = familyLabel(anchor)
-    const baseName = draft.requestedName || (draft.legacy ? "Auto" : label ? `Auto ${label}` : `Auto ${draft.index}`)
-    const baseID =
-      draft.requestedID ||
-      (draft.requestedName ? slugify(draft.requestedName) : label ? `auto-${slugify(label)}` : `auto-${draft.index}`)
-    autos.push({
-      id: draft.legacy ? MODEL_ID : uniqueValue(baseID, usedIDs),
-      name: draft.legacy ? "Auto" : uniqueValue(baseName, usedNames, " "),
-      tier: normalizeTier(draft.tier),
-      preferredAPIIDs: preferred.map((m) => m.apiID),
+const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1)
+
+// The picker autos: `auto` on the configured tier, plus one per other picker tier
+// (auto-efficiency, auto-intelligence next to a balance `auto`), all on one anchor.
+// Picking another one mid-conversation switches the tier, as in VS Code's picker.
+export function resolveAutos(options: Options, catalog: CatalogModel[]): AutoSpec[] {
+  const anchor = resolvePreferred(catalog, options.preferredModels) ?? pickAnchor(catalog)
+  if (!anchor) return []
+  const tier = normalizeTier(options.tier)
+  return [
+    { id: MODEL_ID, name: "Auto", tier, anchor },
+    ...PICKER_TIERS.filter((other) => other !== tier).map((other) => ({
+      id: `${MODEL_ID}-${other}`,
+      name: `Auto ${capitalize(other)}`,
+      tier: other,
       anchor,
-      familyFilter: draft.familyFilter,
-    })
-  }
-  return autos
+    })),
+  ]
 }
 
 // --- routing ----------------------------------------------------------------------------
-// Whether an auto can send `apiID`: same transport and wire API as its anchor (the
-// anchor's endpoint carries the request) and, for clamped autos, the same family.
-export function servable(auto: AutoSpec, apiID: string, catalog: CatalogModel[]): boolean {
-  if (apiID === auto.anchor.apiID) return true
-  const model = catalog.find((m) => m.apiID === apiID)
+// Whether an auto can send `apiID`: same transport and wire API as its anchor, whose
+// endpoint carries the request, and vision when the turn attaches an image.
+export function servable(auto: AutoSpec, apiID: string, catalog: CatalogModel[], hasImage = false): boolean {
+  const model = apiID === auto.anchor.apiID ? auto.anchor : catalog.find((m) => m.apiID === apiID)
   if (!model || model.transport !== auto.anchor.transport || model.wire !== auto.anchor.wire) return false
-  return !auto.familyFilter || familyLabel(model) === auto.familyFilter
+  return !hasImage || model.vision
 }
 
-// Turns a routing result into the route an auto pins its conversation to.
-export function pickRoute(auto: AutoSpec, session: AutoSession | undefined, catalog: CatalogModel[]): Route {
+// Whether a pinned route can serve the next turn, as VS Code's _isCacheEntryCompatible:
+// its token is not about to expire, and it supports vision if the turn has an image.
+export function routeUsable(route: Route, catalog: CatalogModel[], hasImage: boolean): boolean {
+  if (Date.now() >= route.expiresAtMs - SESSION_REFRESH_SKEW_MS) return false
+  return !hasImage || !!catalog.find((m) => m.apiID === route.modelID)?.vision
+}
+
+// Turns a POST /auto result into the route an auto pins its conversation to.
+export function pickRoute(auto: AutoSpec, session: AutoSession | undefined, catalog: CatalogModel[], hasImage = false): Route {
   const fallback = auto.anchor.apiID
   // expiresAtMs 0 → nothing to stick to; route again next turn.
   if (!session) return { modelID: fallback, expiresAtMs: 0 }
-  const usable = session.models.filter((id) => servable(auto, id, catalog))
-  const picked = auto.preferredAPIIDs.find((id) => usable.includes(id)) ?? usable[0]
-  if (picked) {
-    log(`${auto.id} routed (${session.source}) -> ${picked}`)
-    return { modelID: picked, sessionToken: session.sessionToken, expiresAtMs: session.expiresAtMs }
+  if (servable(auto, session.modelID, catalog, hasImage)) {
+    log(`${auto.id} routed -> ${session.modelID}`)
+    return { modelID: session.modelID, sessionToken: session.sessionToken, expiresAtMs: session.expiresAtMs }
   }
-  // The server chose a model this auto cannot send (other endpoint, wire API or family,
-  // or missing from the catalog). Stick with the anchor for this session, without the
-  // token.
+  // The router chose a model this auto cannot send (other endpoint or wire API, no
+  // vision for an image turn, or missing from the catalog). VS Code would send it
+  // through that model's own endpoint; opencode built the request for the anchor, so
+  // stay on the anchor for this session, without the token.
   log(
-    `${auto.id}: server offered [${session.models.join(", ")}] (${session.source}), none servable via ${auto.anchor.transport} (${auto.anchor.wire})${auto.familyFilter ? ` in family ${auto.familyFilter}` : ""}; using ${fallback} without Copilot-Session-Token`,
+    `${auto.id}: router picked ${session.modelID}, not servable via ${auto.anchor.transport} (${auto.anchor.wire})${hasImage ? " with vision" : ""}; using ${fallback} without Copilot-Session-Token`,
   )
   return { modelID: fallback, expiresAtMs: session.expiresAtMs }
 }
@@ -322,9 +216,6 @@ function copilotHeaders(bearer: string): Record<string, string> {
     Authorization: `Bearer ${bearer}`,
     "Content-Type": "application/json",
     "X-GitHub-Api-Version": COPILOT_API_VERSION,
-    "VScode-SessionId": VSCODE_SESSION_ID,
-    "VScode-MachineId": VSCODE_MACHINE_ID,
-    "Editor-Device-Id": VSCODE_DEVICE_ID,
   }
 }
 
@@ -376,8 +267,7 @@ export async function fetchAutoDecision(
     )
     // The token lasts 24h with no refresh flow.
     return {
-      source: "auto",
-      models: [modelID],
+      modelID,
       sessionToken: data.session_token,
       expiresAtMs: expiresAtMs(data.expires_at, 24 * 60 * 60_000),
     }
@@ -386,41 +276,5 @@ export async function fetchAutoDecision(
     return undefined
   } finally {
     clearTimeout(timer)
-  }
-}
-
-// POST /models/session — Auto V1, which VS Code deleted in Aug 2026. Its pool no
-// longer receives new models; kept only as a fallback for when POST /auto fails.
-export async function fetchLegacySession(baseURL: string, bearer: string): Promise<AutoSession | undefined> {
-  const response = await fetch(`${baseURL}/models/session`, {
-    method: "POST",
-    headers: copilotHeaders(bearer),
-    body: JSON.stringify({ auto_mode: { model_hints: [MODEL_ID] } }),
-  }).catch((error) => {
-    log(`legacy session fetch failed: ${String(error)}`)
-    return undefined
-  })
-  if (!response) return undefined
-  if (!response.ok) {
-    const body = await response.text().catch(() => "")
-    log(`legacy session fetch non-ok: ${response.status} ${body}`)
-    return undefined
-  }
-  const data = (await response.json().catch(() => undefined)) as
-    | { session_token?: unknown; available_models?: unknown; expires_at?: unknown }
-    | undefined
-  if (!data || typeof data.session_token !== "string") {
-    log("legacy session fetch invalid payload (missing session_token)")
-    return undefined
-  }
-  const models = Array.isArray(data.available_models)
-    ? (data.available_models.filter((m) => typeof m === "string") as string[])
-    : []
-  log(`legacy session parsed: available_models=[${models.join(", ")}]`)
-  return {
-    source: "legacy",
-    models,
-    sessionToken: data.session_token,
-    expiresAtMs: expiresAtMs(data.expires_at, 30 * 60_000),
   }
 }
