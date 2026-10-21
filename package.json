@@ -26,7 +26,7 @@
     "@opencode-ai/sdk": "1.19.2",
     "@opencode/plugin": "2.0.30",
     "@types/bun": "latest",
-    "typescript": "^5.5.0"
+    "typescript": "^7.0.2"
   },
   "keywords": [
     "opencode",
