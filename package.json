@@ -1,6 +1,6 @@
 {
   "name": "@klconsultancy/opencode-copilot-auto",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "GitHub Copilot's Auto model for opencode 1 and 2: VS Code's POST /auto routing, with one picker model per tier",
   "type": "module",
   "main": "./dist/index.js",
