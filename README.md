@@ -143,6 +143,27 @@ request model gpt-5.4 -> gpt-6-luna
 
 ## Development
 
+The repo pins bun 1.4.3 in `.mise.toml` (for [mise](https://mise.jdx.dev)) and in CI.
+
+### Devcontainer
+
+`.devcontainer/` gives a container with bun and both opencode lines side by side,
+isolated from any opencode you use day to day:
+
+| Command | Runs | Loads the plugin from |
+|---------|------|------------------------|
+| `oc1` | opencode 1.19.2 | `dist/index.js` |
+| `oc2` | opencode 2.0.30 | `dist/` (opencode 2 only loads a directory) |
+| `plugin-log 1` / `plugin-log 2` | follows that version's plugin log | |
+
+Each keeps its own config, login and logs under `~/.oc/1` or `~/.oc/2`, on a volume that
+survives rebuilds. Sign in to Copilot once per version (`oc1 auth login`, `oc2 auth
+login github-copilot`); the device login prints a URL to open on the host. Plugin options
+go in `~/.oc/<1|2>/config/opencode/opencode.json`. Run `bun run dev` to rebuild `dist/` on
+every change.
+
+### Commands
+
 ```sh
 bun install
 bun run typecheck

@@ -20,3 +20,18 @@ jobs:
       - run: bun run typecheck
       - run: bun run build
       - run: bun test
+
+  devcontainer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t devcontainer .devcontainer
+      # Both opencode versions start and see the plugin build.
+      - run: |
+          docker run --rm -u node -v "$PWD:/workspaces/repo" -w /workspaces/repo devcontainer bash -euc '
+            git config --global --add safe.directory /workspaces/repo
+            bun install --frozen-lockfile && bun run build
+            oc1 --version
+            oc2 --version
+            oc2 models --standalone --print-logs --log-level info 2>&1 | grep "loading plugin"
+          '
