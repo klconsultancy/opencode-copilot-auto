@@ -22,8 +22,18 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      # A GitHub App token instead of GITHUB_TOKEN, so the release PR it opens
+      # triggers CI (events from GITHUB_TOKEN start no new workflow runs). The App
+      # and its credentials live at the klconsultancy organization level.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: googleapis/release-please-action@v5
         id: release
+        with:
+          token: ${{ steps.app-token.outputs.token }}
 
   publish:
     needs: release-please
