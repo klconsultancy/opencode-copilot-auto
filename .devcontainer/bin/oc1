@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# opencode 1 with this repo's plugin build (dist/index.js), isolated in ~/.oc/1.
+# Run `bun run build` (or `bun run dev`) first. Plugin options go in
+# ~/.oc/1/config/opencode/opencode.json.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+home="$HOME/.oc/1"
+export XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" XDG_STATE_HOME="$home/state" XDG_CACHE_HOME="$home/cache"
+config="$XDG_CONFIG_HOME/opencode/opencode.json"
+if [ ! -f "$config" ]; then
+  mkdir -p "$(dirname "$config")"
+  printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "plugin": [["%s/dist/index.js", {}]]\n}\n' "$root" > "$config"
+fi
+exec /opt/opencode1/bin/opencode "$@"

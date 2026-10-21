@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Follow the plugin log of opencode 1 or 2 in this devcontainer: plugin-log 1|2
+set -euo pipefail
+case "${1:-}" in
+  1|2) ;;
+  *) echo "usage: plugin-log 1|2" >&2; exit 2 ;;
+esac
+log="$HOME/.oc/$1/state/opencode-copilot-auto/plugin.log"
+mkdir -p "$(dirname "$log")" && touch "$log"
+exec tail -n 50 -F "$log"

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# opencode 2 with this repo's plugin build (the dist directory: opencode 2 only
+# loads local plugins from a directory), isolated in ~/.oc/2. Run `bun run build`
+# (or `bun run dev`) first. Plugin options go in ~/.oc/2/config/opencode/opencode.json.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+home="$HOME/.oc/2"
+export XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" XDG_STATE_HOME="$home/state" XDG_CACHE_HOME="$home/cache"
+config="$XDG_CONFIG_HOME/opencode/opencode.json"
+if [ ! -f "$config" ]; then
+  mkdir -p "$(dirname "$config")"
+  printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "plugins": [{ "package": "%s/dist", "options": {} }]\n}\n' "$root" > "$config"
+fi
+exec /opt/opencode2/bin/opencode2 "$@"

@@ -1,0 +1,12 @@
+{
+  "name": "opencode-copilot-auto",
+  "build": { "dockerfile": "Dockerfile", "context": "." },
+  "remoteUser": "node",
+  "mounts": ["source=opencode-copilot-auto-oc,target=/home/node/.oc,type=volume"],
+  "postCreateCommand": "bun install && bun run build",
+  "customizations": {
+    "vscode": {
+      "extensions": ["oven.bun-vscode"]
+    }
+  }
+}
