@@ -1,5 +1,10 @@
 # opencode-copilot-auto
 
+[![CI](https://github.com/klconsultancy/opencode-copilot-auto/actions/workflows/ci.yml/badge.svg)](https://github.com/klconsultancy/opencode-copilot-auto/actions/workflows/ci.yml)
+[![Release](https://github.com/klconsultancy/opencode-copilot-auto/actions/workflows/release.yml/badge.svg)](https://github.com/klconsultancy/opencode-copilot-auto/actions/workflows/release.yml)
+[![npm](https://img.shields.io/npm/v/@klconsultancy/opencode-copilot-auto)](https://www.npmjs.com/package/@klconsultancy/opencode-copilot-auto)
+[![License: MIT](https://img.shields.io/github/license/klconsultancy/opencode-copilot-auto)](LICENSE)
+
 GitHub Copilot's **Auto** model for [opencode](https://opencode.ai), working the way
 it does in VS Code and Copilot CLI: each conversation is routed through Copilot's
 `POST /auto` router, on the tier you pick, and billed through an Auto session (with
@@ -126,13 +131,24 @@ request model gpt-5.4 -> gpt-6-luna
 
 ```sh
 bun install
-bun test            # opencode 1 and 2 adapters, against stand-in plugin contexts
 bun run typecheck
 bun run build       # dist/index.js, no runtime dependencies
+bun test            # opencode 1 and 2 adapters, against stand-in plugin contexts
 ```
 
 `src/core.ts` holds the routing; `src/v1.ts` (`server`) and `src/v2.ts` (`setup`) adapt
 it to each opencode plugin API, and `src/index.ts` exports both.
+
+### Releases
+
+Releases run from GitHub Actions with
+[release-please](https://github.com/googleapis/release-please). Commit messages follow
+[Conventional Commits](https://www.conventionalcommits.org): `fix:` makes a patch,
+`feat:` a minor, and `feat!:` or a `BREAKING CHANGE:` footer a major release. Each push to
+`main` updates a release PR with the next version and `CHANGELOG.md`; merging it tags the
+release, creates the GitHub release and publishes to npm through
+[trusted publishing](https://docs.npmjs.com/trusted-publishers) (with provenance, no
+token).
 
 ## License
 
