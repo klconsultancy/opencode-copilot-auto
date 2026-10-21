@@ -1,0 +1,40 @@
+# Only dev dependencies, actions and the devcontainer image: none of these updates
+# changes the published package, so the commit prefixes (chore/ci) cut no release.
+version: 2
+updates:
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # The plugin types and the SDK are released together; keep them in step.
+      opencode:
+        patterns: ["@opencode-ai/*", "@opencode/*"]
+      dev-tools:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /.devcontainer
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
