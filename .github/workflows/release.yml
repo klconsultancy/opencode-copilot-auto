@@ -2,7 +2,9 @@ name: Release
 
 # Every push to main updates the release PR (version bump + CHANGELOG from
 # conventional commits). Merging that PR tags the release, creates the GitHub
-# release and publishes to npm through trusted publishing (OIDC, no token).
+# release and stages the version on npm through trusted publishing (OIDC, no
+# token). A maintainer approves the staged version with 2FA on npmjs.com (Staged
+# Packages) or with `npm stage approve <stage-id>` before it goes live.
 on:
   push:
     branches: [main]
@@ -38,11 +40,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.3
-      # Trusted publishing needs npm >= 11.5.1 (Node 24 ships npm 11).
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      # Staged publishing needs npm >= 11.15.0.
+      - run: npm install -g npm@11.19.0
       - run: bun install --frozen-lockfile
-      # prepublishOnly runs typecheck, build and tests first.
-      - run: npm publish --provenance --access public
+      # prepublishOnly runs typecheck, build and tests first. The trusted publisher
+      # only allows staging: the version goes live once a maintainer approves it.
+      - run: npm stage publish

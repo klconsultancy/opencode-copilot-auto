@@ -146,9 +146,10 @@ Releases run from GitHub Actions with
 [Conventional Commits](https://www.conventionalcommits.org): `fix:` makes a patch,
 `feat:` a minor, and `feat!:` or a `BREAKING CHANGE:` footer a major release. Each push to
 `main` updates a release PR with the next version and `CHANGELOG.md`; merging it tags the
-release, creates the GitHub release and publishes to npm through
-[trusted publishing](https://docs.npmjs.com/trusted-publishers) (with provenance, no
-token).
+release, creates the GitHub release and stages the version on npm through
+[trusted publishing](https://docs.npmjs.com/trusted-publishers) (no token). A maintainer
+then approves it with 2FA under **Staged Packages** on npmjs.com, or with
+`npm stage approve <stage-id>`, before it goes live.
 
 ## License
 
