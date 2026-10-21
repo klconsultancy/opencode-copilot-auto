@@ -51,6 +51,20 @@ The tier only steers the router; the chosen model runs with its normal settings.
 
 Sign in to GitHub Copilot in opencode as usual; the plugin uses that connection.
 
+### Updating
+
+opencode installs a plugin package once and keeps using the cached copy: it does not
+look for newer versions, not even for an unversioned name. Pin the version and bump it
+to update:
+
+```jsonc
+{ "plugin": ["@klconsultancy/opencode-copilot-auto@1.0.1"] }
+```
+
+opencode installs a new version on the next start. Start the TUI for that: a
+short-lived command such as `opencode run` or `opencode models` can exit before the
+install finishes, and then the plugin is missing for that run.
+
 From a local checkout (`bun install && bun run build`), use the `dist` directory for
 opencode 2 (it only accepts a directory) and `dist/index.js` for opencode 1.
 
