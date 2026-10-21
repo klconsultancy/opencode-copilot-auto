@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/javascript-node:5-24-bookworm
+FROM mcr.microsoft.com/devcontainers/javascript-node:5-26-bookworm
 
 ARG BUN_VERSION=1.4.3
 ARG OPENCODE1_VERSION=1.19.2
