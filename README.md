@@ -143,7 +143,7 @@ request model gpt-5.4 -> gpt-6-luna
 
 ## Development
 
-The repo pins bun 1.4.3 in `.mise.toml` (for [mise](https://mise.jdx.dev)) and in CI.
+CI and the devcontainer use bun 1.4.3.
 
 ### Devcontainer
 
