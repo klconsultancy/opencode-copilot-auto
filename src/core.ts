@@ -2,7 +2,7 @@
 // call, which autos to inject and which server pick an auto can actually send.
 // Mirrors VS Code's Copilot Auto (extensions/copilot/src/platform/endpoint in
 // microsoft/vscode: automodeService.ts, autoV2Fetcher.ts, autoModeTiers.ts).
-import { appendFile, mkdir } from "node:fs/promises"
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 
@@ -93,18 +93,20 @@ export type Route = {
   expiresAtMs: number
 }
 
+// --- state directory --------------------------------------------------------------------
+// ~/.local/state/opencode-copilot-auto (or $XDG_STATE_HOME, %LOCALAPPDATA% on Windows):
+// the log and the persisted routes. Resolved per call, so tests can move it.
+function stateDir() {
+  if (process.platform === "win32")
+    return path.join(process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local"), PLUGIN_ID)
+  return path.join(process.env.XDG_STATE_HOME ?? path.join(homedir(), ".local", "state"), PLUGIN_ID)
+}
+
 // --- logging ----------------------------------------------------------------------------
 // File logger — keeps the TUI clean.
 // Tail ~/.local/state/opencode-copilot-auto/plugin.log to observe.
 function logFile() {
-  if (process.platform === "win32")
-    return path.join(
-      process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local"),
-      PLUGIN_ID,
-      "plugin.log",
-    )
-  const xdg = process.env.XDG_STATE_HOME
-  return path.join(xdg ?? path.join(homedir(), ".local", "state"), PLUGIN_ID, "plugin.log")
+  return path.join(stateDir(), "plugin.log")
 }
 
 let logReady: Promise<void> | undefined
@@ -276,5 +278,136 @@ export async function fetchAutoDecision(
     return undefined
   } finally {
     clearTimeout(timer)
+  }
+}
+
+// --- conversations ----------------------------------------------------------------------
+// Everything tracked per opencode session and auto: the pinned route plus the inputs
+// for the next routing round.
+export type ConvState = {
+  route?: Route
+  routing?: Promise<Route>
+  needsReEval?: boolean
+  // The prompt a routing round last failed for (no Auto session); the next attempt
+  // waits for the next user prompt instead of stalling every tool step.
+  failedFor?: object
+}
+
+// What survives a reload: the route (with its session token, so the conversation
+// stays billed against its Auto session) and a pending re-evaluation.
+type StoredConv = Route & { needsReEval?: boolean }
+type StoredSessions = Record<string, Record<string, StoredConv>>
+
+// opencode reloads plugins whenever the config changes and recycles idle instances,
+// which used to drop every pinned route: the next turn routed again on whatever the
+// user typed last and could switch the model mid-conversation, losing its prompt
+// cache. VS Code keeps the route per conversation; so do we, across reloads, in
+// routes.json next to the log. Entries live as long as their session token (24h).
+function routesFile() {
+  return path.join(stateDir(), "routes.json")
+}
+
+function durable(route: Route | undefined, now = Date.now()): route is Route {
+  return !!route && route.expiresAtMs > now
+}
+
+async function readRoutes(file: string): Promise<StoredSessions> {
+  try {
+    const data = JSON.parse(await readFile(file, "utf8")) as { sessions?: unknown }
+    return data.sessions && typeof data.sessions === "object" ? (data.sessions as StoredSessions) : {}
+  } catch {
+    return {}
+  }
+}
+
+// Writes from this process run one at a time; each re-reads the file, so instances
+// for other directories (or other opencode processes) keep their entries.
+let routeWrites: Promise<void> = Promise.resolve()
+
+function writeRoute(sessionID: string, autoID: string, entry: StoredConv | undefined): Promise<void> {
+  const file = routesFile()
+  const write = async () => {
+    const sessions = await readRoutes(file)
+    const now = Date.now()
+    if (entry) (sessions[sessionID] ??= {})[autoID] = entry
+    else if (sessions[sessionID]) delete sessions[sessionID][autoID]
+    for (const [id, autos] of Object.entries(sessions)) {
+      for (const [auto, stored] of Object.entries(autos)) if (!durable(stored, now)) delete autos[auto]
+      if (!Object.keys(autos).length) delete sessions[id]
+    }
+    await mkdir(path.dirname(file), { recursive: true })
+    // Holds session tokens: owner-only, replaced atomically.
+    const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+    try {
+      await writeFile(tmp, JSON.stringify({ version: 1, sessions }), { mode: 0o600 })
+      await rename(tmp, file)
+    } catch (error) {
+      await rm(tmp, { force: true }).catch(() => undefined)
+      throw error
+    }
+  }
+  routeWrites = routeWrites.then(write).catch((error) => log(`route store write failed: ${String(error)}`))
+  return routeWrites
+}
+
+export class Conversations {
+  private live = new Map<string, Map<string, ConvState>>()
+  private stored: StoredSessions = {}
+
+  // Reads the routes persisted by earlier instances. Never throws.
+  async load() {
+    this.stored = await readRoutes(routesFile())
+  }
+
+  // The conversation of `auto` in a session. A route persisted before a reload comes
+  // back while its token is valid and the auto can still send its model (the anchor
+  // or catalog may have changed since).
+  get(sessionID: string, auto: AutoSpec, catalog: CatalogModel[]): ConvState {
+    let sessionAutos = this.live.get(sessionID)
+    if (!sessionAutos) {
+      sessionAutos = new Map()
+      this.live.set(sessionID, sessionAutos)
+    }
+    let conv = sessionAutos.get(auto.id)
+    if (conv) return conv
+    conv = {}
+    const stored = this.stored[sessionID]?.[auto.id]
+    if (stored) {
+      delete this.stored[sessionID][auto.id]
+      const { needsReEval, ...route } = stored
+      if (durable(route) && servable(auto, route.modelID, catalog)) {
+        conv.route = route
+        conv.needsReEval = needsReEval
+        log(`${auto.id}: restored ${route.modelID} for ${sessionID}`)
+      }
+    }
+    sessionAutos.set(auto.id, conv)
+    return conv
+  }
+
+  // Persists a conversation after a routing round or an invalidation.
+  save(sessionID: string, autoID: string, conv: ConvState): Promise<void> {
+    const route = conv.route
+    return writeRoute(
+      sessionID,
+      autoID,
+      durable(route) ? { ...route, ...(conv.needsReEval ? { needsReEval: true } : {}) } : undefined,
+    )
+  }
+
+  // Marks every auto of a session for re-routing on its next agent turn, including
+  // routes restored from disk but not used yet. Returns whether there was any.
+  async invalidate(sessionID: string): Promise<boolean> {
+    const writes: Promise<void>[] = []
+    for (const [autoID, conv] of this.live.get(sessionID) ?? []) {
+      conv.needsReEval = true
+      writes.push(this.save(sessionID, autoID, conv))
+    }
+    for (const [autoID, stored] of Object.entries(this.stored[sessionID] ?? {})) {
+      stored.needsReEval = true
+      writes.push(writeRoute(sessionID, autoID, stored))
+    }
+    await Promise.all(writes)
+    return writes.length > 0
   }
 }

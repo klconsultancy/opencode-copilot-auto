@@ -1,6 +1,9 @@
 // opencode 2 adapter (`setup`), against a minimal stand-in for its plugin context.
 import { describe, expect, test } from "bun:test"
+import { existsSync, readFileSync, statSync } from "node:fs"
+import path from "node:path"
 import plugin from "../src/index"
+import { freshStateDir } from "./setup"
 
 const COPILOT = "https://api.githubcopilot.com"
 const COPILOT_SDK = "aisdk:@ai-sdk/github-copilot"
@@ -80,7 +83,10 @@ type Hook = (event: any) => Promise<void> | void
 
 // Loads the plugin against a minimal stand-in for opencode 2's plugin context: a
 // model editor over `models` and a recorder for session hooks.
-async function setup(models: FakeModel[], options: Record<string, unknown> = {}, credential: unknown = oauth) {
+// `stateDir` reuses the state of an earlier setup, as a plugin reload would.
+async function setup(models: FakeModel[], options: Record<string, unknown> = {}, credential: unknown = oauth, stateDir?: string) {
+  if (stateDir) process.env.XDG_STATE_HOME = stateDir
+  else freshStateDir()
   const store = new Map(models.map((m) => [m.id, structuredClone(m)]))
   const hooks = new Map<string, { callback: Hook; providerID?: string }>()
   const transforms: Array<(editor: unknown) => void> = []
@@ -466,6 +472,85 @@ describe("when routing fails or cannot serve the turn", () => {
       expect(calls).toHaveLength(2)
       expect(calls[1].body.has_image).toBe(true)
       expect(image.model).toBe("gpt-6.1-sol")
+    })
+  })
+})
+
+describe("across plugin reloads", () => {
+  // opencode reloads the plugin on every config change and recycles idle instances.
+  test("keeps the route and its token, without routing again on the next prompt", async () => {
+    let pick = "gpt-6-luna"
+    await withFetch({ auto: () => autoPicks(pick)() }, async (calls) => {
+      const dir = freshStateDir()
+      await (await setup(catalog, {}, oauth, dir)).turn("auto")
+      pick = "gpt-6.1-sol"
+      const reloaded = await setup(catalog, {}, oauth, dir)
+      const next = await reloaded.turn("auto", { prompt: "continue" })
+      expect(calls).toHaveLength(1)
+      expect(next.model).toBe("gpt-6-luna")
+      expect(next.token).toBe("tok-gpt-6-luna")
+    })
+  })
+
+  test("keeps every session and auto apart", async () => {
+    await withFetch({ auto: (body) => autoPicks(body.tier === "intelligence" ? "gpt-6.1-sol" : "gpt-6-luna")() }, async (calls) => {
+      const dir = freshStateDir()
+      const first = await setup(catalog, {}, oauth, dir)
+      await first.turn("auto", { sessionID: "ses_a" })
+      await first.turn("auto-intelligence", { sessionID: "ses_b" })
+      const reloaded = await setup(catalog, {}, oauth, dir)
+      expect((await reloaded.turn("auto", { sessionID: "ses_a" })).model).toBe("gpt-6-luna")
+      expect((await reloaded.turn("auto-intelligence", { sessionID: "ses_b" })).model).toBe("gpt-6.1-sol")
+      expect(calls).toHaveLength(2)
+    })
+  })
+
+  test("routes again when the restored token is about to expire", async () => {
+    await withFetch({ auto: autoPicks("gpt-6-luna", 60) }, async (calls) => {
+      const dir = freshStateDir()
+      await (await setup(catalog, {}, oauth, dir)).turn("auto")
+      await (await setup(catalog, {}, oauth, dir)).turn("auto")
+      expect(calls).toHaveLength(2)
+    })
+  })
+
+  test("routes again when the restored model can no longer be sent", async () => {
+    await withFetch({ auto: autoPicks("gpt-6-luna") }, async (calls) => {
+      const dir = freshStateDir()
+      await (await setup(catalog, {}, oauth, dir)).turn("auto")
+      const result = await (await setup([sonnet, haiku, gpt54, sol], {}, oauth, dir)).turn("auto")
+      expect(calls).toHaveLength(2)
+      expect(result.model).toBe("gpt-5.4")
+    })
+  })
+
+  test("a compaction before the reload still re-routes the next agent turn", async () => {
+    let pick = "gpt-6-luna"
+    await withFetch({ auto: () => autoPicks(pick)() }, async (calls) => {
+      const dir = freshStateDir()
+      const first = await setup(catalog, {}, oauth, dir)
+      await first.turn("auto")
+      await first.turn("auto", { prompt: null, kind: "compaction" })
+      pick = "gpt-6.1-sol"
+      const after = await (await setup(catalog, {}, oauth, dir)).turn("auto")
+      expect(calls).toHaveLength(2)
+      expect(after.model).toBe("gpt-6.1-sol")
+    })
+  })
+
+  test("stores the session tokens owner-only, and no fallback without a token", async () => {
+    await withFetch({ auto: () => 503 }, async () => {
+      const dir = freshStateDir()
+      await (await setup(catalog, {}, oauth, dir)).turn("auto")
+      expect(existsSync(path.join(dir, "opencode-copilot-auto", "routes.json"))).toBe(true)
+      expect(JSON.parse(readFileSync(path.join(dir, "opencode-copilot-auto", "routes.json"), "utf8")).sessions).toEqual({})
+    })
+    await withFetch({ auto: autoPicks("gpt-6-luna") }, async () => {
+      const dir = freshStateDir()
+      await (await setup(catalog, {}, oauth, dir)).turn("auto")
+      const file = path.join(dir, "opencode-copilot-auto", "routes.json")
+      expect(statSync(file).mode & 0o777).toBe(0o600)
+      expect(JSON.parse(readFileSync(file, "utf8")).sessions.ses_test.auto.sessionToken).toBe("tok-gpt-6-luna")
     })
   })
 })

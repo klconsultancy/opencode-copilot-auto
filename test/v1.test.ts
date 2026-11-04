@@ -1,6 +1,7 @@
 // opencode 1 adapter (`server`), against opencode 1's provider and chat hooks.
 import { describe, expect, test } from "bun:test"
 import plugin from "../src/index"
+import { freshStateDir } from "./setup"
 
 const makeModel = (id: string, apiId: string, npm: string, url: string, name: string, reasoning = false, temperature = true) => ({
   id,
@@ -71,7 +72,10 @@ const autoPicks = (id: string, ttlSeconds = 86_400) => () => ({
   selected_model: { id },
 })
 
-async function setup(models: Record<string, unknown>, options: Record<string, unknown> = {}, ctx: object = oauth) {
+// `stateDir` reuses the state of an earlier setup, as a plugin reload would.
+async function setup(models: Record<string, unknown>, options: Record<string, unknown> = {}, ctx: object = oauth, stateDir?: string) {
+  if (stateDir) process.env.XDG_STATE_HOME = stateDir
+  else freshStateDir()
   const hooks = await plugin.server({ client: { tui: { showToast: async () => {} } } } as never, options)
   const resolved = (await hooks.provider!.models!({ id: "github-copilot", models } as never, ctx as never)) as Record<string, any>
   // One model call; `prompt: null` is a follow-up step of the same turn (no new user message).
@@ -439,6 +443,48 @@ describe("when routing fails or cannot serve the turn", () => {
       expect(calls).toHaveLength(2)
       expect(calls[1].body.has_image).toBe(true)
       expect(image.model).toBe("gpt-5.4")
+    })
+  })
+})
+
+describe("across plugin reloads", () => {
+  test("keeps the route and its token, without routing again on the next prompt", async () => {
+    let pick = "gpt-5.4-mini"
+    await withFetch({ auto: () => autoPicks(pick)() }, async (calls) => {
+      const dir = freshStateDir()
+      await (await setup(catalog, {}, oauth, dir)).turn("auto")
+      pick = "gpt-5.4"
+      const next = await (await setup(catalog, {}, oauth, dir)).turn("auto", { prompt: "continue" })
+      expect(calls).toHaveLength(1)
+      expect(next.model).toBe("gpt-5.4-mini")
+      expect(next.token).toBe("tok-gpt-5.4-mini")
+    })
+  })
+
+  test("a compaction before the reload still re-routes the next turn", async () => {
+    let pick = "gpt-5.4-mini"
+    await withFetch({ auto: () => autoPicks(pick)() }, async (calls) => {
+      const dir = freshStateDir()
+      const first = await setup(catalog, {}, oauth, dir)
+      await first.turn("auto")
+      await first.hooks.event!({ event: { type: "session.compacted", properties: { sessionID: "ses_test" } } } as never)
+      pick = "gpt-5.4"
+      const after = await (await setup(catalog, {}, oauth, dir)).turn("auto")
+      expect(calls).toHaveLength(2)
+      expect(after.model).toBe("gpt-5.4")
+    })
+  })
+
+  test("a compaction right after a reload re-routes a route not used yet", async () => {
+    let pick = "gpt-5.4-mini"
+    await withFetch({ auto: () => autoPicks(pick)() }, async (calls) => {
+      const dir = freshStateDir()
+      await (await setup(catalog, {}, oauth, dir)).turn("auto")
+      const reloaded = await setup(catalog, {}, oauth, dir)
+      await reloaded.hooks.event!({ event: { type: "session.compacted", properties: { sessionID: "ses_test" } } } as never)
+      pick = "gpt-5.4"
+      expect((await reloaded.turn("auto")).model).toBe("gpt-5.4")
+      expect(calls).toHaveLength(2)
     })
   })
 })
