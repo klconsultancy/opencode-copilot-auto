@@ -22,9 +22,9 @@
     "prepublishOnly": "bun run typecheck && bun run build && bun test"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.19.2",
-    "@opencode-ai/sdk": "1.19.2",
-    "@opencode/plugin": "2.0.30",
+    "@opencode-ai/plugin": "1.19.3",
+    "@opencode-ai/sdk": "1.19.3",
+    "@opencode/plugin": "2.1.2",
     "@types/bun": "latest",
     "typescript": "^7.0.2"
   },
