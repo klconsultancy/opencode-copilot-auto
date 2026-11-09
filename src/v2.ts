@@ -5,6 +5,7 @@ import {
   type AutoSpec,
   type CatalogModel,
   type ConvKind,
+  Conversations,
   DEFAULT_BASE_URL,
   type Options,
   PROVIDER_ID,
@@ -30,17 +31,6 @@ type CopilotModel = {
   settings?: Record<string, unknown>
   enabled?: boolean
   capabilities?: { input?: readonly string[] }
-}
-
-// Everything tracked per opencode session and auto: the pinned route plus the
-// inputs for the next routing round.
-type ConvState = {
-  route?: Route
-  routing?: Promise<Route>
-  needsReEval?: boolean
-  // The prompt a routing round last failed for (no Auto session); the next attempt
-  // waits for the next user prompt instead of stalling every tool step.
-  failedFor?: object
 }
 
 // opencode's Copilot provider sends GPT-5+ (except gpt-5-mini), Grok and MAI Code
@@ -104,21 +94,10 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   let autos = new Map<string, AutoSpec>()
   let injectedSignature = ""
   const prompts = new Map<string, { text: string; hasImage: boolean }>()
-  const conversations = new Map<string, Map<string, ConvState>>()
+  const conversations = new Conversations()
+  await conversations.load()
 
-  function getConv(sessionID: string, autoID: string): ConvState {
-    let sessionAutos = conversations.get(sessionID)
-    if (!sessionAutos) {
-      sessionAutos = new Map()
-      conversations.set(sessionID, sessionAutos)
-    }
-    let conv = sessionAutos.get(autoID)
-    if (!conv) {
-      conv = {}
-      sessionAutos.set(autoID, conv)
-    }
-    return conv
-  }
+  const getConv = (sessionID: string, auto: AutoSpec) => conversations.get(sessionID, auto, catalog)
 
   // One routing round through POST /auto.
   async function resolveRoute(sessionID: string, auto: AutoSpec, hasImage: boolean): Promise<Route> {
@@ -130,7 +109,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         : undefined
     // As VS Code: when routing fails, keep the last route while it can still serve
     // the turn, and route again on the next one.
-    const previous = getConv(sessionID, auto.id).route
+    const previous = getConv(sessionID, auto).route
     if (!session && previous?.sessionToken && routeUsable(previous, catalog, hasImage)) {
       log(`${auto.id}: routing failed, keeping ${previous.modelID} for ${sessionID}`)
       return previous
@@ -146,7 +125,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   // compaction, when the token is about to expire, when the turn attaches an image
   // the model cannot read, or after a failed round.
   async function ensureRoute(sessionID: string, auto: AutoSpec, kind: ConvKind): Promise<Route> {
-    const conv = getConv(sessionID, auto.id)
+    const conv = getConv(sessionID, auto)
     const prompt = prompts.get(sessionID)
     const hasImage = kind === "primary" && !!prompt?.hasImage
     const route = conv.route
@@ -163,6 +142,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
     if (next !== route && kind === "primary") conv.needsReEval = false
     conv.failedFor = next.sessionToken && next !== route ? undefined : prompt
     conv.route = next
+    await conversations.save(sessionID, auto.id, conv)
     return next
   }
 
@@ -209,10 +189,9 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   // keeps the current route.
   await ctx.session.hook(
     "compaction",
-    (event) => {
+    async (event) => {
       if (!autos.has(event.model.id)) return
-      for (const conv of conversations.get(event.sessionID)?.values() ?? []) conv.needsReEval = true
-      log(`route invalidated by compaction for ${event.sessionID}`)
+      if (await conversations.invalidate(event.sessionID)) log(`route invalidated by compaction for ${event.sessionID}`)
     },
     { providerID: PROVIDER_ID },
   )
@@ -236,7 +215,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
     async (event) => {
       const auto = autos.get(event.model.id)
       if (!auto) return
-      const modelID = conversations.get(event.sessionID)?.get(auto.id)?.route?.modelID
+      const modelID = getConv(event.sessionID, auto).route?.modelID
       if (!modelID) return
       const text = await event.request.clone().text().catch(() => "")
       let body: Record<string, unknown>

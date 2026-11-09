@@ -6,6 +6,7 @@ import type { Model } from "@opencode-ai/sdk/v2"
 import {
   type AutoSpec,
   type CatalogModel,
+  Conversations,
   type Options,
   PLUGIN_ID,
   PROVIDER_ID,
@@ -17,17 +18,6 @@ import {
   resolveAutos,
   routeUsable,
 } from "./core"
-
-// Everything tracked per opencode session and auto: the pinned route plus whether the
-// next agent turn has to route again.
-type ConvState = {
-  route?: Route
-  routing?: Promise<Route>
-  needsReEval?: boolean
-  // The prompt a routing round last failed for (no Auto session); the next attempt
-  // waits for the next user prompt instead of stalling every tool step.
-  failedFor?: object
-}
 
 // opencode's github-copilot provider sends GPT-5+ (except gpt-5-mini) over the
 // Responses API and everything else over Chat Completions; Claude goes through the
@@ -107,23 +97,12 @@ export const server: Plugin = async ({ client }, options) => {
   let catalog: CatalogModel[] = []
   let autos = new Map<string, AutoSpec>()
   const prompts = new Map<string, { text: string; hasImage: boolean }>()
-  const conversations = new Map<string, Map<string, ConvState>>()
+  const conversations = new Conversations()
+  await conversations.load()
 
   const modelByAPIID = (apiID: string) => models.find((m) => m.api.id === apiID)
 
-  function getConv(sessionID: string, autoID: string): ConvState {
-    let sessionAutos = conversations.get(sessionID)
-    if (!sessionAutos) {
-      sessionAutos = new Map()
-      conversations.set(sessionID, sessionAutos)
-    }
-    let conv = sessionAutos.get(autoID)
-    if (!conv) {
-      conv = {}
-      sessionAutos.set(autoID, conv)
-    }
-    return conv
-  }
+  const getConv = (sessionID: string, auto: AutoSpec) => conversations.get(sessionID, auto, catalog)
 
   // One routing round through POST /auto.
   async function resolveRoute(sessionID: string, auto: AutoSpec, hasImage: boolean): Promise<Route> {
@@ -135,7 +114,7 @@ export const server: Plugin = async ({ client }, options) => {
         : undefined
     // As VS Code: when routing fails, keep the last route while it can still serve
     // the turn, and route again on the next one.
-    const previous = getConv(sessionID, auto.id).route
+    const previous = getConv(sessionID, auto).route
     if (!session && previous?.sessionToken && routeUsable(previous, catalog, hasImage)) {
       log(`${auto.id}: routing failed, keeping ${previous.modelID} for ${sessionID}`)
       return previous
@@ -160,10 +139,8 @@ export const server: Plugin = async ({ client }, options) => {
     // turn (mirrors VS Code's invalidateRouterCache).
     event: async ({ event }) => {
       if (event.type !== "session.compacted") return
-      const sessionAutos = conversations.get(event.properties.sessionID)
-      if (!sessionAutos?.size) return
-      for (const conv of sessionAutos.values()) conv.needsReEval = true
-      log(`route invalidated by compaction for ${event.properties.sessionID}`)
+      const sessionID = event.properties.sessionID
+      if (await conversations.invalidate(sessionID)) log(`route invalidated by compaction for ${sessionID}`)
     },
     // Capture what the user typed; only POST /auto sees it. Synthetic parts (file
     // contents, reminders) are opencode's additions, not the user's prompt.
@@ -181,7 +158,7 @@ export const server: Plugin = async ({ client }, options) => {
       if (incoming.model.providerID !== PROVIDER_ID) return
       const auto = autos.get(incoming.model.id)
       if (!auto) return
-      const conv = getConv(incoming.sessionID, auto.id)
+      const conv = getConv(incoming.sessionID, auto)
       // Route once per conversation and stick with it so the model — and its prompt
       // KV cache — stays stable, as VS Code does. Route again after compaction, when
       // the token is about to expire, when the turn attaches an image the model
@@ -204,6 +181,7 @@ export const server: Plugin = async ({ client }, options) => {
         if (next !== route) conv.needsReEval = false
         conv.failedFor = next.sessionToken && next !== route ? undefined : prompt
         conv.route = next
+        await conversations.save(incoming.sessionID, auto.id, conv)
       }
 
       // The model itself is swapped in by the fetch wrapper (see chat.headers).
@@ -221,7 +199,7 @@ export const server: Plugin = async ({ client }, options) => {
       if (incoming.model.providerID !== PROVIDER_ID) return
       const auto = autos.get(incoming.model.id)
       if (!auto) return
-      const route = getConv(incoming.sessionID, auto.id).route
+      const route = getConv(incoming.sessionID, auto).route
       if (!route) return
       output.headers[ROUTE_HEADER] = route.modelID
       if (route.sessionToken) output.headers["Copilot-Session-Token"] = route.sessionToken
