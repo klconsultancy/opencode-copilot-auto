@@ -24,7 +24,7 @@
   "devDependencies": {
     "@opencode-ai/plugin": "1.19.3",
     "@opencode-ai/sdk": "1.19.3",
-    "@opencode/plugin": "2.1.2",
+    "@opencode/plugin": "2.2.7",
     "@types/bun": "latest",
     "typescript": "^7.0.2"
   },

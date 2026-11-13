@@ -17,6 +17,7 @@ import {
   resolveAutos,
   routeUsable,
 } from "./core"
+import { Cascade, cascadeOptions, cascadeSpec } from "./cascade"
 
 type Context = Plugin.Context
 
@@ -99,8 +100,19 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
 
   const getConv = (sessionID: string, auto: AutoSpec) => conversations.get(sessionID, auto, catalog)
 
+  const cascadeOpts = cascadeOptions(opts)
+  let cascade = cascadeOpts
+    ? new Cascade({
+        options: cascadeOpts,
+        catalog: () => catalog,
+        generate: (sessionID, prompt) => ctx.session.generate({ sessionID, prompt }),
+        parentOf: async (sessionID) => (await ctx.session.get({ sessionID })).parentID ?? undefined,
+      })
+    : undefined
+
   // One routing round through POST /auto.
   async function resolveRoute(sessionID: string, auto: AutoSpec, hasImage: boolean): Promise<Route> {
+    if (auto.pinned) return { modelID: auto.anchor.apiID, expiresAtMs: Number.MAX_SAFE_INTEGER }
     const prompt = prompts.get(sessionID)
     const credential = await copilotCredential(ctx)
     const session =
@@ -155,7 +167,9 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
     const real = models.filter((m) => !autos.has(m.id))
     catalog = real.map(toCatalogModel)
     // Never shadow a real catalog model of the same id.
-    const resolved = resolveAutos(opts, catalog).filter((auto) => !real.some((m) => m.id === auto.id))
+    const specs = resolveAutos(opts, catalog)
+    if (cascade && specs[0]) specs.push(cascadeSpec(specs[0].anchor, catalog, cascadeOpts?.draft))
+    const resolved = specs.filter((auto) => !real.some((m) => m.id === auto.id))
     autos = new Map(resolved.map((auto) => [auto.id, auto]))
     for (const auto of resolved) {
       const source = real.find((m) => m.id === auto.anchor.key)
@@ -182,6 +196,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
       text: event.prompt.text.trim(),
       hasImage: files.some((file) => IMAGE.test(file.uri)),
     })
+    cascade?.onPrompt(event.sessionID, event.messageID, event.prompt.text.trim())
   })
 
   // After compaction the conversation shape changed, so re-route on the next agent
@@ -204,6 +219,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
       if (!auto) return
       const route = await ensureRoute(event.sessionID, auto, event.kind)
       if (route.sessionToken) event.headers["Copilot-Session-Token"] = route.sessionToken
+      if (event.kind === "primary") cascade?.onPrimaryRequest(event.sessionID, auto.id, route.modelID)
     },
     { providerID: PROVIDER_ID },
   )
@@ -244,4 +260,25 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
     },
     { providerID: PROVIDER_ID },
   )
+
+  if (cascade) {
+    try {
+      // Experimental hooks (opencode >= 2.2.7); without them the cascade auto still
+      // drafts, it is just never judged.
+      await ctx.session.hook(
+        "experimental.model.resolve",
+        (event) => {
+          cascade?.resolveModel(event)
+        },
+        { providerID: PROVIDER_ID },
+      )
+      await ctx.session.hook("experimental.idle", async (event) => {
+        await cascade?.onIdle(event.sessionID, event.background)
+      })
+      log("cascade: enabled (observe only)")
+    } catch (error) {
+      log(`cascade: disabled, this opencode lacks its hooks: ${String(error)}`)
+      cascade = undefined
+    }
+  }
 }

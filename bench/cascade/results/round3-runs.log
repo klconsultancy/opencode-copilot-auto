@@ -1,0 +1,17 @@
+h01-slots r1 passed=true exit=0 62s 8 passed in 0.00s
+h02-split r1 passed=true exit=0 36s 6 passed in 0.00s
+h03-calc r1 passed=true exit=0 213s 24 passed in 0.01s
+h04-truncate r1 passed=true exit=0 82s 6 passed in 0.00s
+h05-semver r1 passed=true exit=0 101s 14 passed in 0.00s
+h06-cron r1 passed=true exit=0 157s 17 passed in 0.76s
+h07-jsonpatch r1 passed=true exit=0 236s 12 passed in 0.00s
+h08-cart r1 passed=true exit=0 112s 10 passed in 0.00s
+h01-slots r2 passed=true exit=0 82s 8 passed in 0.00s
+h02-split r2 passed=true exit=0 58s 6 passed in 0.00s
+h03-calc r2 passed=true exit=0 110s 24 passed in 0.01s
+h04-truncate r2 passed=true exit=0 80s 6 passed in 0.00s
+h05-semver r2 passed=true exit=0 76s 14 passed in 0.00s
+h06-cron r2 passed=true exit=0 164s 17 passed in 0.93s
+h07-jsonpatch r2 passed=true exit=124 600s 12 passed in 0.00s
+h08-cart r2 passed=true exit=0 360s 10 passed in 0.00s
+DONE

@@ -2,7 +2,7 @@ FROM mcr.microsoft.com/devcontainers/javascript-node:5-26-bookworm
 
 ARG BUN_VERSION=1.4.3
 ARG OPENCODE1_VERSION=1.19.2
-ARG OPENCODE2_VERSION=2.0.30
+ARG OPENCODE2_VERSION=2.2.7
 
 # Both opencode packages install an `opencode` command, so each gets its own prefix;
 # oc1 and oc2 pick the right one.

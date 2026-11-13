@@ -62,6 +62,11 @@ export type Options = {
   // Ordered list of model keys or API ids to anchor the autos on. The anchor's
   // endpoint carries every request an auto sends, and it is the fallback model.
   preferredModels?: string[]
+  // Experimental, opencode 2 only: adds `auto-cascade`, an efficiency-tier auto whose
+  // turns a judge model reviews (see cascade.ts). `true`, or `{ judge, draft }` to name the
+  // judge by model key or API id; `draft` pins the draft to one model instead of /auto
+  // (for measuring the judge on weak drafts).
+  cascade?: boolean | { judge?: string; draft?: string }
 }
 
 // An auto as injected into the picker: cloned from its anchor model, whose endpoint
@@ -71,6 +76,8 @@ export type AutoSpec = {
   name: string
   tier: AutoTier
   anchor: CatalogModel
+  // Skip POST /auto and always send the anchor (the cascade's test-only `draft`).
+  pinned?: boolean
 }
 
 // A POST /auto result: the model it picked plus the session token that places chat
@@ -96,7 +103,7 @@ export type Route = {
 // --- state directory --------------------------------------------------------------------
 // ~/.local/state/opencode-copilot-auto (or $XDG_STATE_HOME, %LOCALAPPDATA% on Windows):
 // the log and the persisted routes. Resolved per call, so tests can move it.
-function stateDir() {
+export function stateDir() {
   if (process.platform === "win32")
     return path.join(process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local"), PLUGIN_ID)
   return path.join(process.env.XDG_STATE_HOME ?? path.join(homedir(), ".local", "state"), PLUGIN_ID)

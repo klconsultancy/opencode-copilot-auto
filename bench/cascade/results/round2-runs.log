@@ -1,0 +1,14 @@
+t01-fix-add passed=true exit=0 10s
+t02-slugify passed=true exit=0 15s
+t03-duration passed=true exit=0 49s
+t04-lru passed=true exit=0 15s
+t05-paginate passed=true exit=0 13s
+t06-roman passed=true exit=0 29s
+t07-intervals passed=true exit=0 16s
+t08-question passed=true exit=0 10s
+t09-csv passed=true exit=0 32s
+t10-leap passed=true exit=0 15s
+t11-write-tests passed=true exit=0 13s
+t12-median passed=true exit=0 14s
+t13-orders passed=true exit=0 31s
+DONE

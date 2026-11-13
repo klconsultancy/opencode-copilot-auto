@@ -84,7 +84,14 @@ type Hook = (event: any) => Promise<void> | void
 // Loads the plugin against a minimal stand-in for opencode 2's plugin context: a
 // model editor over `models` and a recorder for session hooks.
 // `stateDir` reuses the state of an earlier setup, as a plugin reload would.
-async function setup(models: FakeModel[], options: Record<string, unknown> = {}, credential: unknown = oauth, stateDir?: string) {
+// `sessionApi` adds ctx.session methods such as generate and get.
+async function setup(
+  models: FakeModel[],
+  options: Record<string, unknown> = {},
+  credential: unknown = oauth,
+  stateDir?: string,
+  sessionApi: Record<string, unknown> = {},
+) {
   if (stateDir) process.env.XDG_STATE_HOME = stateDir
   else freshStateDir()
   const store = new Map(models.map((m) => [m.id, structuredClone(m)]))
@@ -107,6 +114,7 @@ async function setup(models: FakeModel[], options: Record<string, unknown> = {},
       },
     },
     session: {
+      ...sessionApi,
       hook: async (name: string, callback: Hook, opts?: { providerID?: string }) => {
         hooks.set(name, { callback, providerID: opts?.providerID })
         return registration
@@ -135,6 +143,7 @@ async function setup(models: FakeModel[], options: Record<string, unknown> = {},
   await plugin.setup(ctx as never)
 
   const call = async (name: string, event: Record<string, unknown>) => hooks.get(name)?.callback(event)
+  let messages = 0
 
   // One model call as opencode 2 issues it: prompt admission (when `prompt` is set),
   // context, model.request, then the native HTTP request built for the model's modelID.
@@ -144,7 +153,7 @@ async function setup(models: FakeModel[], options: Record<string, unknown> = {},
   ) {
     const model = store.get(modelKey)!
     const ref = { providerID: "github-copilot", id: modelKey }
-    if (prompt !== null) await call("prompt", { sessionID, prompt: { text: prompt, files } })
+    if (prompt !== null) await call("prompt", { sessionID, messageID: `msg_${++messages}`, prompt: { text: prompt, files } })
     const context = { sessionID, agent: "build", model: ref, system: [], messages: [], tools: {}, options: {} as Record<string, unknown> }
     if (kind === "primary") await call("context", context)
     if (kind === "compaction") await call("compaction", context)
