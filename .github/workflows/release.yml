@@ -18,7 +18,7 @@ jobs:
   # its credentials live at the klconsultancy organization level.
   release-please:
     permissions: {} # it acts as the app
-    uses: klconsultancy/workflows/.github/workflows/release-please.yml@e6939b6be36b833baf87de0ce25c0ff4cac96b2f # v1.0.0
+    uses: klconsultancy/workflows/.github/workflows/release-please.yml@153c11cfe93c94e30a657a6d43f55ec44e6e13b8 # v1.0.1
     with:
       app-client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
     secrets:
